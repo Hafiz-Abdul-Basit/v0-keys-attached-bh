@@ -5,11 +5,12 @@ import type React from "react"
 import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Upload, Download, X, FileText } from "lucide-react"
+import { Upload, Download, X, FileText, Plus, Settings } from "lucide-react"
 import { DocumentPreview } from "@/components/document-preview"
 import { KeysList } from "@/components/keys-list"
 import { downloadFile } from "@/lib/download-helper"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 
 interface FileData {
   file: File
@@ -22,9 +23,14 @@ export default function Home() {
   const [uploadedFiles, setUploadedFiles] = useState<FileData[]>([])
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
   const [keyMappings, setKeyMappings] = useState<{ [key: string]: string }>({})
   const [previewKey, setPreviewKey] = useState(0)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [showPlaceholderManager, setShowPlaceholderManager] = useState(false)
+  const [newPlaceholderKey, setNewPlaceholderKey] = useState("")
+  const [newPlaceholderValue, setNewPlaceholderValue] = useState("")
+  const [customPlaceholders, setCustomPlaceholders] = useState<{ [key: string]: string }>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -55,6 +61,7 @@ export default function Home() {
   }
 
   const processFiles = async (files: File[]) => {
+    setIsUploading(true)
     const newFileData: FileData[] = []
 
     for (const file of files) {
@@ -85,6 +92,7 @@ export default function Home() {
     if (uploadedFiles.length === 0 && newFileData.length > 0) {
       setSelectedFileIndex(0)
     }
+    setIsUploading(false)
   }
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -117,6 +125,31 @@ export default function Home() {
     }))
   }
 
+  const handleAddPlaceholder = () => {
+    if (newPlaceholderKey.trim() && newPlaceholderValue.trim()) {
+      const formattedKey = newPlaceholderKey.toUpperCase().trim()
+      const formattedValue = newPlaceholderValue.startsWith("<<")
+        ? newPlaceholderValue
+        : `<<${newPlaceholderValue.toUpperCase().trim()}>>`
+
+      setCustomPlaceholders((prev) => ({
+        ...prev,
+        [formattedKey]: formattedValue,
+      }))
+
+      setNewPlaceholderKey("")
+      setNewPlaceholderValue("")
+    }
+  }
+
+  const handleRemovePlaceholder = (key: string) => {
+    setCustomPlaceholders((prev) => {
+      const updated = { ...prev }
+      delete updated[key]
+      return updated
+    })
+  }
+
   const handleReplaceKeys = async () => {
     if (uploadedFiles.length === 0) return
 
@@ -128,7 +161,8 @@ export default function Home() {
         const fileData = updatedFiles[i]
         const formData = new FormData()
         formData.append("file", fileData.file)
-        formData.append("keyMappings", JSON.stringify(keyMappings))
+        const allKeyMappings = { ...keyMappings, ...customPlaceholders }
+        formData.append("keyMappings", JSON.stringify(allKeyMappings))
         formData.append("foundKeys", JSON.stringify(fileData.matchedKeys))
         formData.append("unmatchedKeys", JSON.stringify(fileData.unmatchedKeys))
 
@@ -171,14 +205,12 @@ export default function Home() {
 
     try {
       if (processedFiles.length === 1) {
-        // Single file download
         const fileData = processedFiles[0]
         const blob = new Blob([fileData.replacedFile!], {
           type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         })
         downloadFile(blob, fileData.file.name)
       } else {
-        // Multiple files - create ZIP
         const JSZip = (await import("jszip")).default
         const zip = new JSZip()
 
@@ -195,6 +227,21 @@ export default function Home() {
     }
   }
 
+  const handleShowPlaceholderManager = () => {
+    setShowPlaceholderManager(!showPlaceholderManager)
+
+    if (!showPlaceholderManager && uniqueUnmatchedKeys.length > 0) {
+      const newMappings = { ...customPlaceholders }
+      uniqueUnmatchedKeys.forEach((key) => {
+        if (!newMappings[key]) {
+          // Auto-suggest a placeholder format for unmatched keys only
+          newMappings[key] = `<<${key}>>`
+        }
+      })
+      setCustomPlaceholders(newMappings)
+    }
+  }
+
   const currentFile = uploadedFiles[selectedFileIndex]
   const allMatchedKeys = uploadedFiles.flatMap((f) => f.matchedKeys)
   const allUnmatchedKeys = uploadedFiles.flatMap((f) => f.unmatchedKeys)
@@ -207,10 +254,25 @@ export default function Home() {
       <div className="border-b bg-card p-4">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">DocX Key Replacer</h1>
-          <Button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2">
-            <Upload className="h-4 w-4" />
-            Upload .docx Files
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={handleShowPlaceholderManager}
+              className="flex items-center gap-2 bg-transparent"
+            >
+              <Settings className="h-4 w-4" />
+              Manage Placeholders
+              {uniqueUnmatchedKeys.length > 0 && (
+                <Badge variant="destructive" className="ml-1 text-xs">
+                  {uniqueUnmatchedKeys.length}
+                </Badge>
+              )}
+            </Button>
+            <Button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2">
+              <Upload className="h-4 w-4" />
+              Upload .docx Files
+            </Button>
+          </div>
           <input
             ref={fileInputRef}
             type="file"
@@ -221,6 +283,131 @@ export default function Home() {
           />
         </div>
       </div>
+
+      {/* Placeholder Manager Panel */}
+      {showPlaceholderManager && (
+        <div className="border-b bg-muted/30 p-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Placeholder Manager</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Map unmatched keys from your documents to correct placeholders
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {uniqueUnmatchedKeys.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="font-medium text-sm">
+                      Unmatched Keys Found in Documents:
+                      <Badge variant="destructive" className="ml-2 text-xs">
+                        {uniqueUnmatchedKeys.length} need mapping
+                      </Badge>
+                    </h4>
+                    <div className="grid gap-2 max-h-64 overflow-y-auto">
+                      {uniqueUnmatchedKeys.map((key) => (
+                        <div key={key} className="flex items-center gap-2 bg-background p-3 rounded border">
+                          <div className="flex-1">
+                            <div className="text-sm font-mono">
+                              <span className="text-orange-600 font-semibold">{key}</span>
+                              <span className="mx-2 text-muted-foreground">→</span>
+                            </div>
+                          </div>
+                          <Input
+                            value={customPlaceholders[key] || `<<${key}>>`}
+                            onChange={(e) => {
+                              setCustomPlaceholders((prev) => ({
+                                ...prev,
+                                [key]: e.target.value,
+                              }))
+                            }}
+                            className="flex-1 font-mono text-sm"
+                            placeholder="<<CORRECT_PLACEHOLDER>>"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Object.keys(customPlaceholders).filter((key) => !uniqueUnmatchedKeys.includes(key)).length > 0 && (
+                  <div className="space-y-2 border-t pt-4">
+                    <h4 className="font-medium text-sm">
+                      Custom Placeholder Mappings:
+                      <Badge variant="outline" className="ml-2 text-xs">
+                        {Object.keys(customPlaceholders).filter((key) => !uniqueUnmatchedKeys.includes(key)).length}{" "}
+                        custom
+                      </Badge>
+                    </h4>
+                    <div className="grid gap-2 max-h-32 overflow-y-auto">
+                      {Object.entries(customPlaceholders)
+                        .filter(([key]) => !uniqueUnmatchedKeys.includes(key))
+                        .map(([key, value]) => (
+                          <div key={key} className="flex items-center gap-2 bg-background p-3 rounded border">
+                            <div className="flex-1">
+                              <div className="text-sm font-mono">
+                                <span className="text-blue-600 font-semibold">{key}</span>
+                                <span className="mx-2 text-muted-foreground">→</span>
+                              </div>
+                            </div>
+                            <Input
+                              value={value}
+                              onChange={(e) => {
+                                setCustomPlaceholders((prev) => ({
+                                  ...prev,
+                                  [key]: e.target.value,
+                                }))
+                              }}
+                              className="flex-1 font-mono text-sm"
+                              placeholder="<<PLACEHOLDER>>"
+                            />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemovePlaceholder(key)}
+                              className="h-8 w-8 p-0 hover:bg-destructive hover:text-destructive-foreground"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                {uniqueUnmatchedKeys.length === 0 && Object.keys(customPlaceholders).length === 0 && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p className="text-sm">No unmatched keys found in your documents.</p>
+                    <p className="text-xs mt-1">All keys in your documents match existing placeholders.</p>
+                  </div>
+                )}
+
+                <div className="border-t pt-4">
+                  <h4 className="font-medium text-sm mb-2">Add Manual Mapping:</h4>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Key found in document (e.g., LOSSUNEXCUSEDINSTRUCTIONSMINUTES)"
+                      value={newPlaceholderKey}
+                      onChange={(e) => setNewPlaceholderKey(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Input
+                      placeholder="Correct placeholder (e.g., LOSSEXCUSEDINSTRUCTIONSHOURS)"
+                      value={newPlaceholderValue}
+                      onChange={(e) => setNewPlaceholderValue(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button onClick={handleAddPlaceholder} className="flex items-center gap-2">
+                      <Plus className="h-4 w-4" />
+                      Add
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* File List Bar */}
       {uploadedFiles.length > 0 && (
@@ -274,7 +461,50 @@ export default function Home() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="h-[calc(100%-80px)]">
-                {currentFile?.replacedFile ? (
+                {isUploading ? (
+                  <div className="flex h-full items-center justify-center">
+                    <div className="text-center space-y-6">
+                      <div className="relative">
+                        {/* Outer rotating ring */}
+                        <div className="w-20 h-20 mx-auto relative">
+                          <div className="absolute inset-0 border-4 border-gray-200 rounded-full"></div>
+                          <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+
+                          {/* Inner pulsing document icon */}
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="bg-white rounded-lg p-2 shadow-sm animate-pulse">
+                              <FileText className="h-8 w-8 text-blue-500" />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Progress dots */}
+                        <div className="flex justify-center space-x-1 mt-4">
+                          <div
+                            className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
+                            style={{ animationDelay: "0ms" }}
+                          ></div>
+                          <div
+                            className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
+                            style={{ animationDelay: "150ms" }}
+                          ></div>
+                          <div
+                            className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
+                            style={{ animationDelay: "300ms" }}
+                          ></div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <h3 className="text-lg font-semibold text-gray-900">Processing Documents</h3>
+                        <p className="text-sm text-gray-600">Analyzing document structure and extracting keys...</p>
+                        <div className="text-xs text-gray-500 bg-gray-50 px-3 py-1 rounded-full inline-block">
+                          Please wait while we process your files
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : currentFile?.replacedFile ? (
                   <DocumentPreview
                     key={`replaced-${previewKey}-${selectedFileIndex}`}
                     file={currentFile.replacedFile}
@@ -337,6 +567,7 @@ export default function Home() {
             disabled={
               uploadedFiles.length === 0 ||
               isProcessing ||
+              isUploading ||
               (uniqueMatchedKeys.length === 0 && uniqueUnmatchedKeys.length === 0)
             }
             className="flex items-center gap-2 bg-transparent"

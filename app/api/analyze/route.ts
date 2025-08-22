@@ -16,17 +16,37 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer()
     const zip = new PizZip(arrayBuffer)
 
-    // Create docxtemplater instance
-    const doc = new Docxtemplater(zip, {
-      paragraphLoop: true,
-      linebreaks: true,
-    })
+    // Extract text from all XML parts of the document
+    let allText = ""
 
-    // Render the document
-    doc.render()
+    // Get main document text
+    try {
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+      })
+      doc.render()
+      allText += doc.getFullText() + " "
+    } catch (error) {
+      console.log("[v0] Error with docxtemplater, trying direct XML extraction")
+    }
 
-    // Get the document text
-    const text = doc.getFullText()
+    // Also extract directly from document.xml to catch table content
+    try {
+      const documentXml = zip.file("word/document.xml")?.asText()
+      if (documentXml) {
+        // Remove XML tags and extract text content
+        const textContent = documentXml
+          .replace(/<[^>]*>/g, " ") // Remove XML tags
+          .replace(/\s+/g, " ") // Normalize whitespace
+          .trim()
+        allText += " " + textContent
+      }
+    } catch (error) {
+      console.log("[v0] Could not extract from document.xml")
+    }
+
+    const text = allText.trim()
 
     const matchedKeys: string[] = []
     const unmatchedKeys: string[] = []
@@ -37,8 +57,13 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    const uppercaseWords = text.match(/\b[A-Z][A-Z0-9_]{1,}\b/g) || []
-    const uniqueUppercaseWords = [...new Set(uppercaseWords)]
+    const uppercaseWords = text.match(/\b[A-Z][A-Z0-9_]*[A-Z0-9]\b/g) || []
+    const singleUppercaseWords = text.match(/\b[A-Z]{4,}\b/g) || []
+    const underscoreWords = text.match(/\b[A-Z]+_[A-Z0-9_]*\b/g) || []
+    const mixedCaseWords = text.match(/\b[A-Z]+[A-Z0-9]*[A-Z]+\b/g) || []
+
+    const allUppercaseWords = [...uppercaseWords, ...singleUppercaseWords, ...underscoreWords, ...mixedCaseWords]
+    const uniqueUppercaseWords = [...new Set(allUppercaseWords)]
 
     const commonWords = [
       "THE",
@@ -55,7 +80,6 @@ export async function POST(request: NextRequest) {
       "ONE",
       "OUR",
       "HAD",
-      "BUT",
       "WORDS",
       "USE",
       "EACH",
@@ -75,25 +99,65 @@ export async function POST(request: NextRequest) {
       "HAS",
       "HIM",
       "HIS",
-      "HOW",
-      "ITS",
       "MAY",
       "NEW",
-      "NOW",
       "OLD",
       "SEE",
       "TWO",
       "WHO",
       "BOY",
-      "DID",
-      "ITS",
       "LET",
-      "OLD",
       "PUT",
       "SAY",
-      "SHE",
       "TOO",
-      "USE",
+      "UNITED",
+      "INDEPENDENT",
+      "SCHOOL",
+      "DISTRICT",
+      "ATTENDANCE",
+      "IMPROVEMENT",
+      "PLAN",
+      "STUDENT",
+      "PARENT",
+      "GUARDIAN",
+      "CAMPUS",
+      "DATE",
+      "TIME",
+      "YEAR",
+      "MONTH",
+      "WEEK",
+      "MINUTES",
+      "HOURS",
+      "DAYS",
+      "ACADEMIC",
+      "SUCCESS",
+      "CRITICAL",
+      "INDICATOR",
+      "PASADENA",
+      "MISSION",
+      "WORK",
+      "PARENTS",
+      "HELP",
+      "ENSURE",
+      "ATTEND",
+      "REGULARLY",
+      "HIGHLY",
+      "IMPACTS",
+      "SOCIAL",
+      "EMOTIONAL",
+      "LEARNING",
+      "LOST",
+      "INSTRUCTIONAL",
+      "DUE",
+      "UNEXCUSED",
+      "ABSENCES",
+      "STATED",
+      "ABOVE",
+      "INCLUDE",
+      "EXCUSED",
+      "ISS",
+      "DPS",
+      "ISD",
     ]
 
     uniqueUppercaseWords.forEach((word) => {
@@ -101,13 +165,16 @@ export async function POST(request: NextRequest) {
         !Object.keys(keys).includes(word) &&
         !matchedKeys.includes(word) &&
         !commonWords.includes(word) &&
-        word.length > 2
+        word.length > 3 && // Keep minimum length at 4 characters
+        !word.match(/^\d+$/) && // Exclude pure numbers
+        !word.match(/^[A-Z]{1,2}$/) // Exclude very short abbreviations
       ) {
-        // Only include words longer than 2 characters
         unmatchedKeys.push(word)
       }
     })
 
+    console.log("[v0] Document text sample:", text.substring(0, 500))
+    console.log("[v0] All uppercase words found:", uniqueUppercaseWords)
     console.log("[v0] Found matching keys:", matchedKeys)
     console.log("[v0] Found unmatched keys:", unmatchedKeys)
 
