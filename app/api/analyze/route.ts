@@ -47,138 +47,63 @@ export async function POST(request: NextRequest) {
     }
 
     const text = allText.trim()
+    console.log("[v0] Full extracted text:", text)
 
     const matchedKeys: string[] = []
     const unmatchedKeys: string[] = []
 
+    // First, find all known keys that exist in the document
     Object.keys(keys).forEach((key) => {
       if (text.includes(key)) {
         matchedKeys.push(key)
       }
     })
 
-    const uppercaseWords = text.match(/\b[A-Z][A-Z0-9_]*[A-Z0-9]\b/g) || []
-    const singleUppercaseWords = text.match(/\b[A-Z]{4,}\b/g) || []
-    const underscoreWords = text.match(/\b[A-Z]+_[A-Z0-9_]*\b/g) || []
-    const mixedCaseWords = text.match(/\b[A-Z]+[A-Z0-9]*[A-Z]+\b/g) || []
+    // Improved pattern to detect ONLY uppercase keys (4+ characters)
+    const uppercasePattern = /\b[A-Z]{4,}[A-Z0-9]*\b/g
+    const allUppercaseKeys = text.match(uppercasePattern) || []
+    
+    // Remove duplicates and sort by length (longest first)
+    const uniqueUppercaseKeys = [...new Set(allUppercaseKeys)]
+      .sort((a, b) => b.length - a.length) // Longest first
 
-    const allUppercaseWords = [...uppercaseWords, ...singleUppercaseWords, ...underscoreWords, ...mixedCaseWords]
-    const uniqueUppercaseWords = [...new Set(allUppercaseWords)]
+    console.log("[v0] All uppercase keys found:", uniqueUppercaseKeys)
 
-    const commonWords = [
-      "THE",
-      "AND",
-      "FOR",
-      "ARE",
-      "BUT",
-      "NOT",
-      "YOU",
-      "ALL",
-      "CAN",
-      "HER",
-      "WAS",
-      "ONE",
-      "OUR",
-      "HAD",
-      "WORDS",
-      "USE",
-      "EACH",
-      "WHICH",
-      "SHE",
-      "HOW",
-      "ITS",
-      "OIL",
-      "SIT",
-      "NOW",
-      "FIND",
-      "LONG",
-      "DOWN",
-      "DAY",
-      "DID",
-      "GET",
-      "HAS",
-      "HIM",
-      "HIS",
-      "MAY",
-      "NEW",
-      "OLD",
-      "SEE",
-      "TWO",
-      "WHO",
-      "BOY",
-      "LET",
-      "PUT",
-      "SAY",
-      "TOO",
-      "UNITED",
-      "INDEPENDENT",
-      "SCHOOL",
-      "DISTRICT",
-      "ATTENDANCE",
-      "IMPROVEMENT",
-      "PLAN",
-      "STUDENT",
-      "PARENT",
-      "GUARDIAN",
-      "CAMPUS",
-      "DATE",
-      "TIME",
-      "YEAR",
-      "MONTH",
-      "WEEK",
-      "MINUTES",
-      "HOURS",
-      "DAYS",
-      "ACADEMIC",
-      "SUCCESS",
-      "CRITICAL",
-      "INDICATOR",
-      "PASADENA",
-      "MISSION",
-      "WORK",
-      "PARENTS",
-      "HELP",
-      "ENSURE",
-      "ATTEND",
-      "REGULARLY",
-      "HIGHLY",
-      "IMPACTS",
-      "SOCIAL",
-      "EMOTIONAL",
-      "LEARNING",
-      "LOST",
-      "INSTRUCTIONAL",
-      "DUE",
-      "UNEXCUSED",
-      "ABSENCES",
-      "STATED",
-      "ABOVE",
-      "INCLUDE",
-      "EXCUSED",
-      "ISS",
-      "DPS",
-      "ISD",
-    ]
+    // Now check each uppercase key against our known keys
+    uniqueUppercaseKeys.forEach((key) => {
+      // Skip if already matched
+      if (matchedKeys.includes(key)) return
+      
+      // Skip if it's a subset of an already matched key
+      if (matchedKeys.some(matchedKey => matchedKey.includes(key) && matchedKey !== key)) return
+      
+      // Skip if it's a number or very common acronym
+      if (key.match(/^\d+$/) || 
+          key.match(/^[A-Z]{1,3}$/) ||
+          ['THE', 'AND', 'FOR', 'WITH', 'THIS', 'THAT', 'HAVE', 'FROM'].includes(key)) {
+        return
+      }
 
-    uniqueUppercaseWords.forEach((word) => {
-      if (
-        !Object.keys(keys).includes(word) &&
-        !matchedKeys.includes(word) &&
-        !commonWords.includes(word) &&
-        word.length > 3 && // Keep minimum length at 4 characters
-        !word.match(/^\d+$/) && // Exclude pure numbers
-        !word.match(/^[A-Z]{1,2}$/) // Exclude very short abbreviations
-      ) {
-        unmatchedKeys.push(word)
+      // If not a known key, add to unmatched
+      if (!keys[key as keyof typeof keys]) {
+        unmatchedKeys.push(key)
       }
     })
 
-    console.log("[v0] Document text sample:", text.substring(0, 500))
-    console.log("[v0] All uppercase words found:", uniqueUppercaseWords)
-    console.log("[v0] Found matching keys:", matchedKeys)
-    console.log("[v0] Found unmatched keys:", unmatchedKeys)
+    // Filter out any keys that are partial matches of longer keys
+    const finalUnmatchedKeys = unmatchedKeys.filter(key => {
+      return !unmatchedKeys.some(otherKey => 
+        otherKey !== key && otherKey.includes(key)
+      )
+    })
 
-    return NextResponse.json({ matchedKeys, unmatchedKeys })
+    console.log("[v0] Found matching keys:", matchedKeys)
+    console.log("[v0] Found unmatched keys:", finalUnmatchedKeys)
+
+    return NextResponse.json({ 
+      matchedKeys, 
+      unmatchedKeys: finalUnmatchedKeys 
+    })
   } catch (error) {
     console.error("Error analyzing document:", error)
     return NextResponse.json({ error: "Failed to analyze document" }, { status: 500 })

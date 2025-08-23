@@ -2,6 +2,10 @@ import { type NextRequest, NextResponse } from "next/server"
 import PizZip from "pizzip"
 import keys from "../../../keys.json"
 
+function escapeRegExp(string: string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
@@ -30,46 +34,43 @@ export async function POST(request: NextRequest) {
 
     let updatedXml = documentXml
 
-    foundKeys.forEach((key: string) => {
+    // Replace keys in order from longest to shortest to prevent partial replacements
+    const allKeysToReplace = [...foundKeys, ...unmatchedKeys]
+      .filter(key => keys[key as keyof typeof keys] || keyMappings[key])
+      .sort((a, b) => b.length - a.length) // Longest first
+
+    console.log("[v0] Keys to replace (sorted):", allKeysToReplace)
+
+    allKeysToReplace.forEach((key: string) => {
+      let finalValue = ""
+      
       if (keys[key as keyof typeof keys]) {
-        const finalValue = keys[key as keyof typeof keys]
-        // Escape XML special characters in the replacement value
-        const escapedValue = finalValue
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&apos;")
-
-        // Replace all occurrences of the plain text key with the XML-escaped replacement value
-        const regex = new RegExp(`\\b${key}\\b`, "g")
-        updatedXml = updatedXml.replace(regex, escapedValue)
-        console.log(`[v0] Replaced ${key} with ${escapedValue}`)
+        finalValue = keys[key as keyof typeof keys]
+      } else if (keyMappings[key]) {
+        finalValue = keyMappings[key]
+      } else {
+        return // Skip if no mapping exists
       }
-    })
 
-    unmatchedKeys.forEach((key: string) => {
-      if (keyMappings[key]) {
-        const mappedValue = keyMappings[key]
-        // Escape XML special characters in the replacement value
-        const escapedValue = mappedValue
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&apos;")
+      const escapedValue = finalValue
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;")
 
-        // Replace all occurrences of the plain text key with the XML-escaped replacement value
-        const regex = new RegExp(`\\b${key}\\b`, "g")
+      // More precise regex to avoid partial matches
+      const regex = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(key)}(?![A-Za-z0-9_])`, "g")
+      
+      const matches = updatedXml.match(regex)
+      if (matches && matches.length > 0) {
+        console.log(`[v0] Replacing ${key} with ${escapedValue} (${matches.length} occurrences)`)
         updatedXml = updatedXml.replace(regex, escapedValue)
-        console.log(`[v0] Mapped ${key} to ${escapedValue}`)
       }
     })
 
     // Update the document with the modified XML
     zip.file("word/document.xml", updatedXml)
-
-    console.log("[v0] Document processed successfully with XML-safe replacement")
 
     // Generate the updated document
     const buffer = zip.generate({
@@ -77,10 +78,10 @@ export async function POST(request: NextRequest) {
       compression: "DEFLATE",
     })
 
-    console.log("[v0] Document buffer generated, size:", buffer.length)
+    // Convert Node.js Buffer -> Uint8Array
+    const uint8Array = new Uint8Array(buffer)
 
-    // Return the file
-    return new NextResponse(buffer, {
+    return new NextResponse(uint8Array, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "Content-Disposition": `attachment; filename="${file.name}"`,

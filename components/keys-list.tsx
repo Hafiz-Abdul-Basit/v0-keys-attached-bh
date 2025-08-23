@@ -14,9 +14,12 @@ interface KeysListProps {
   matchedKeys?: string[]
   unmatchedKeys?: string[]
   onKeyUpdate?: (key: string, value: string) => void
+      customMappings?: { [key: string]: string }  
+
 }
 
-export function KeysList({ matchedKeys = [], unmatchedKeys = [], onKeyUpdate }: KeysListProps) {
+export function KeysList({ matchedKeys = [], unmatchedKeys = [], onKeyUpdate }: KeysListProps,  customMappings = {},
+) {
   const [keys, setKeys] = useState<KeysData>({})
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
@@ -47,8 +50,12 @@ export function KeysList({ matchedKeys = [], unmatchedKeys = [], onKeyUpdate }: 
       placeholder.toLowerCase().includes(searchTerm.toLowerCase()),
   )
 
+  // ❌ Fix: remove any unmatched keys that are already in `keys.json`
   const unmatchedEntries = unmatchedKeys
-    .filter((key) => key.toLowerCase().includes(searchTerm.toLowerCase()))
+    .filter(
+      (key) =>
+        !(key in keys) && key.toLowerCase().includes(searchTerm.toLowerCase())
+    )
     .map((key) => [key, keyMappings[key] || `<<${key}>>`] as [string, string])
 
   const allEntries = [...filteredKeys, ...unmatchedEntries]
@@ -104,12 +111,16 @@ export function KeysList({ matchedKeys = [], unmatchedKeys = [], onKeyUpdate }: 
       </div>
 
       <div className="space-y-2 flex-1 overflow-auto">
-        {sortedKeys.map(([key, placeholder]) => {
+        {sortedKeys.map(([key, placeholder], index) => {
           const isMatched = matchedKeys.includes(key)
           const isUnmatched = unmatchedKeys.includes(key)
+
+          // ✅ React key guaranteed unique now (suffix index just in case)
+          const reactKey = `${isMatched ? "matched" : isUnmatched ? "unmatched" : "placeholder"}-${key}-${index}`
+
           return (
             <Card
-              key={key}
+              key={reactKey}
               className={`p-3 hover:bg-accent/50 transition-colors ${
                 isMatched
                   ? "border-green-500 bg-green-50 dark:bg-green-950"

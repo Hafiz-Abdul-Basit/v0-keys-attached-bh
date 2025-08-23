@@ -1,16 +1,16 @@
 "use client"
 
 import type React from "react"
-
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Upload, Download, X, FileText, Plus, Settings } from "lucide-react"
+import { Upload, Download, X, FileText, Plus, Settings, Map } from "lucide-react"
 import { DocumentPreview } from "@/components/document-preview"
 import { KeysList } from "@/components/keys-list"
 import { downloadFile } from "@/lib/download-helper"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 interface FileData {
   file: File
@@ -32,6 +32,23 @@ export default function Home() {
   const [newPlaceholderValue, setNewPlaceholderValue] = useState("")
   const [customPlaceholders, setCustomPlaceholders] = useState<{ [key: string]: string }>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Auto-open placeholder manager when unmatched keys are found
+  useEffect(() => {
+    if (uniqueUnmatchedKeys.length > 0 && !showPlaceholderManager) {
+      setShowPlaceholderManager(true)
+      
+      // Auto-populate with suggested mappings for unmatched keys
+      const newMappings = { ...customPlaceholders }
+      uniqueUnmatchedKeys.forEach((key) => {
+        if (!newMappings[key]) {
+          // Auto-suggest a placeholder format for unmatched keys only
+          newMappings[key] = `<<${key}>>`
+        }
+      })
+      setCustomPlaceholders(newMappings)
+    }
+  }, [uploadedFiles.length])
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -229,17 +246,6 @@ export default function Home() {
 
   const handleShowPlaceholderManager = () => {
     setShowPlaceholderManager(!showPlaceholderManager)
-
-    if (!showPlaceholderManager && uniqueUnmatchedKeys.length > 0) {
-      const newMappings = { ...customPlaceholders }
-      uniqueUnmatchedKeys.forEach((key) => {
-        if (!newMappings[key]) {
-          // Auto-suggest a placeholder format for unmatched keys only
-          newMappings[key] = `<<${key}>>`
-        }
-      })
-      setCustomPlaceholders(newMappings)
-    }
   }
 
   const currentFile = uploadedFiles[selectedFileIndex]
@@ -255,15 +261,16 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">DocX Key Replacer</h1>
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={handleShowPlaceholderManager}
-              className="flex items-center gap-2 bg-transparent"
+            <Button 
+              onClick={handleShowPlaceholderManager} 
+              variant={showPlaceholderManager ? "default" : "outline"}
+              className="flex items-center gap-2"
+              disabled={uploadedFiles.length === 0}
             >
-              <Settings className="h-4 w-4" />
-              Manage Placeholders
+              <Map className="h-4 w-4" />
+              {showPlaceholderManager ? "Hide Mappings" : "Manage Mappings"}
               {uniqueUnmatchedKeys.length > 0 && (
-                <Badge variant="destructive" className="ml-1 text-xs">
+                <Badge variant="secondary" className="ml-1">
                   {uniqueUnmatchedKeys.length}
                 </Badge>
               )}
@@ -289,54 +296,106 @@ export default function Home() {
         <div className="border-b bg-muted/30 p-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Placeholder Manager</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Map className="h-5 w-5" />
+                Placeholder Mapping
+                {uniqueUnmatchedKeys.length > 0 && (
+                  <Badge variant="destructive" className="ml-2">
+                    {uniqueUnmatchedKeys.length} unmatched keys
+                  </Badge>
+                )}
+              </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Map unmatched keys from your documents to correct placeholders
+                Map keys found in your documents to the correct placeholders
               </p>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-6">
                 {uniqueUnmatchedKeys.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="font-medium text-sm">
-                      Unmatched Keys Found in Documents:
-                      <Badge variant="destructive" className="ml-2 text-xs">
-                        {uniqueUnmatchedKeys.length} need mapping
-                      </Badge>
-                    </h4>
-                    <div className="grid gap-2 max-h-64 overflow-y-auto">
+                  <div className="space-y-4">
+                    <div>
+                      <h4 className="font-medium text-sm mb-2">
+                        Unmatched Keys Found in Documents:
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        These keys were found in your documents but don't match any known placeholders.
+                        Map them to the correct placeholder format.
+                      </p>
+                    </div>
+                    <div className="grid gap-3 max-h-64 overflow-y-auto p-1">
                       {uniqueUnmatchedKeys.map((key) => (
-                        <div key={key} className="flex items-center gap-2 bg-background p-3 rounded border">
+                        <div key={key} className="flex items-center gap-2 bg-background p-3 rounded-md border">
                           <div className="flex-1">
-                            <div className="text-sm font-mono">
-                              <span className="text-orange-600 font-semibold">{key}</span>
-                              <span className="mx-2 text-muted-foreground">→</span>
+                            <Label htmlFor={`key-${key}`} className="text-xs text-muted-foreground mb-1 block">
+                              Key found in document:
+                            </Label>
+                            <div className="text-sm font-mono p-2 bg-muted rounded">
+                              {key}
                             </div>
                           </div>
-                          <Input
-                            value={customPlaceholders[key] || `<<${key}>>`}
-                            onChange={(e) => {
-                              setCustomPlaceholders((prev) => ({
-                                ...prev,
-                                [key]: e.target.value,
-                              }))
-                            }}
-                            className="flex-1 font-mono text-sm"
-                            placeholder="<<CORRECT_PLACEHOLDER>>"
-                          />
+                          <div className="flex-1">
+                            <Label htmlFor={`value-${key}`} className="text-xs text-muted-foreground mb-1 block">
+                              Map to placeholder:
+                            </Label>
+                            <Input
+                              id={`value-${key}`}
+                              value={customPlaceholders[key] || ""}
+                              onChange={(e) => {
+                                setCustomPlaceholders((prev) => ({
+                                  ...prev,
+                                  [key]: e.target.value,
+                                }))
+                              }}
+                              className="font-mono text-sm"
+                              placeholder={`<<${key}>>`}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
 
+                <div className="border-t pt-4">
+                  <h4 className="font-medium text-sm mb-3">Add Custom Mapping:</h4>
+                  <div className="grid grid-cols-5 gap-3">
+                    <div className="col-span-2">
+                      <Label htmlFor="new-key" className="text-xs text-muted-foreground mb-1 block">
+                        Key found in document:
+                      </Label>
+                      <Input
+                        id="new-key"
+                        placeholder="e.g., ABSENCESDATESLOSS"
+                        value={newPlaceholderKey}
+                        onChange={(e) => setNewPlaceholderKey(e.target.value.toUpperCase())}
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Label htmlFor="new-value" className="text-xs text-muted-foreground mb-1 block">
+                        Map to placeholder:
+                      </Label>
+                      <Input
+                        id="new-value"
+                        placeholder="e.g., <<ABSENCESDATESLOSS>>"
+                        value={newPlaceholderValue}
+                        onChange={(e) => setNewPlaceholderValue(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button onClick={handleAddPlaceholder} className="flex items-center gap-2 w-full">
+                        <Plus className="h-4 w-4" />
+                        Add
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
                 {Object.keys(customPlaceholders).filter((key) => !uniqueUnmatchedKeys.includes(key)).length > 0 && (
                   <div className="space-y-2 border-t pt-4">
                     <h4 className="font-medium text-sm">
-                      Custom Placeholder Mappings:
+                      Custom Mappings:
                       <Badge variant="outline" className="ml-2 text-xs">
-                        {Object.keys(customPlaceholders).filter((key) => !uniqueUnmatchedKeys.includes(key)).length}{" "}
-                        custom
+                        {Object.keys(customPlaceholders).filter((key) => !uniqueUnmatchedKeys.includes(key)).length}
                       </Badge>
                     </h4>
                     <div className="grid gap-2 max-h-32 overflow-y-auto">
@@ -348,19 +407,9 @@ export default function Home() {
                               <div className="text-sm font-mono">
                                 <span className="text-blue-600 font-semibold">{key}</span>
                                 <span className="mx-2 text-muted-foreground">→</span>
+                                <span>{value}</span>
                               </div>
                             </div>
-                            <Input
-                              value={value}
-                              onChange={(e) => {
-                                setCustomPlaceholders((prev) => ({
-                                  ...prev,
-                                  [key]: e.target.value,
-                                }))
-                              }}
-                              className="flex-1 font-mono text-sm"
-                              placeholder="<<PLACEHOLDER>>"
-                            />
                             <Button
                               variant="ghost"
                               size="sm"
@@ -374,35 +423,6 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-
-                {uniqueUnmatchedKeys.length === 0 && Object.keys(customPlaceholders).length === 0 && (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <p className="text-sm">No unmatched keys found in your documents.</p>
-                    <p className="text-xs mt-1">All keys in your documents match existing placeholders.</p>
-                  </div>
-                )}
-
-                <div className="border-t pt-4">
-                  <h4 className="font-medium text-sm mb-2">Add Manual Mapping:</h4>
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Key found in document (e.g., LOSSUNEXCUSEDINSTRUCTIONSMINUTES)"
-                      value={newPlaceholderKey}
-                      onChange={(e) => setNewPlaceholderKey(e.target.value)}
-                      className="flex-1"
-                    />
-                    <Input
-                      placeholder="Correct placeholder (e.g., LOSSEXCUSEDINSTRUCTIONSHOURS)"
-                      value={newPlaceholderValue}
-                      onChange={(e) => setNewPlaceholderValue(e.target.value)}
-                      className="flex-1"
-                    />
-                    <Button onClick={handleAddPlaceholder} className="flex items-center gap-2">
-                      <Plus className="h-4 w-4" />
-                      Add
-                    </Button>
-                  </div>
-                </div>
               </div>
             </CardContent>
           </Card>
@@ -552,6 +572,7 @@ export default function Home() {
                   matchedKeys={uniqueMatchedKeys}
                   unmatchedKeys={uniqueUnmatchedKeys}
                   onKeyUpdate={handleKeyUpdate}
+                  customMappings={customPlaceholders}
                 />
               </CardContent>
             </Card>
@@ -570,8 +591,7 @@ export default function Home() {
               isUploading ||
               (uniqueMatchedKeys.length === 0 && uniqueUnmatchedKeys.length === 0)
             }
-            className="flex items-center gap-2 bg-transparent"
-            variant="outline"
+            className="flex items-center gap-2"
           >
             {isProcessing
               ? "Processing All Files..."
@@ -581,6 +601,7 @@ export default function Home() {
             onClick={handleDownload}
             disabled={uploadedFiles.filter((f) => f.replacedFile).length === 0}
             className="flex items-center gap-2"
+            variant="outline"
           >
             <Download className="h-4 w-4" />
             Download {uploadedFiles.filter((f) => f.replacedFile).length > 1 ? "ZIP" : "File"}
