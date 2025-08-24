@@ -7,6 +7,7 @@ import "./globals.css"
 export const metadata: Metadata = {
   title: "DocX Key Replacer - Document Template Processing Tool",
   description: "Upload Word documents and replace placeholder keys with custom values",
+    generator: 'v0.app'
 }
 
 export default function RootLayout({
@@ -31,5 +32,3 @@ export default function RootLayout({
       <body>{children}</body>
     </html>
   )}
-
-
