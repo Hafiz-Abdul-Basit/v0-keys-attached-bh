@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -11,7 +11,7 @@ import {
   FileText,
   Plus,
   Settings,
-  Map
+  Map,
 } from "lucide-react";
 import { DocumentPreview } from "@/components/document-preview";
 import { KeysList } from "@/components/keys-list";
@@ -42,23 +42,6 @@ export default function Home() {
     [key: string]: string;
   }>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Auto-open placeholder manager when unmatched keys are found
-  useEffect(() => {
-    if (uniqueUnmatchedKeys.length > 0 && !showPlaceholderManager) {
-      setShowPlaceholderManager(true);
-
-      // Auto-populate with suggested mappings for unmatched keys
-      const newMappings = { ...customPlaceholders };
-      uniqueUnmatchedKeys.forEach((key) => {
-        if (!newMappings[key]) {
-          // Auto-suggest a placeholder format for unmatched keys only
-          newMappings[key] = `<<${key}>>`;
-        }
-      });
-      setCustomPlaceholders(newMappings);
-    }
-  }, [uploadedFiles.length]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -100,7 +83,7 @@ export default function Home() {
 
         const response = await fetch("/api/analyze", {
           method: "POST",
-          body: formData
+          body: formData,
         });
 
         if (response.ok) {
@@ -109,7 +92,7 @@ export default function Home() {
           newFileData.push({
             file,
             matchedKeys: foundKeys,
-            unmatchedKeys: unfoundKeys || []
+            unmatchedKeys: unfoundKeys || [],
           });
           console.log(
             `[v0] Analyzed ${file.name} - Found matching keys:`,
@@ -158,7 +141,7 @@ export default function Home() {
   const handleKeyUpdate = (key: string, value: string) => {
     setKeyMappings((prev) => ({
       ...prev,
-      [key]: value
+      [key]: value,
     }));
   };
 
@@ -171,7 +154,7 @@ export default function Home() {
 
       setCustomPlaceholders((prev) => ({
         ...prev,
-        [formattedKey]: formattedValue
+        [formattedKey]: formattedValue,
       }));
 
       setNewPlaceholderKey("");
@@ -208,7 +191,7 @@ export default function Home() {
 
         const response = await fetch("/api/replace", {
           method: "POST",
-          body: formData
+          body: formData,
         });
 
         if (!response.ok) {
@@ -218,7 +201,7 @@ export default function Home() {
         const blob = await response.blob();
         const timestamp = Date.now();
         const replacedFile = new File([blob], fileData.file.name, {
-          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         });
 
         updatedFiles[i] = { ...fileData, replacedFile };
@@ -247,7 +230,7 @@ export default function Home() {
       if (processedFiles.length === 1) {
         const fileData = processedFiles[0];
         const blob = new Blob([fileData.replacedFile!], {
-          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         });
         downloadFile(blob, fileData.file.name);
       } else {
@@ -379,7 +362,7 @@ export default function Home() {
                               onChange={(e) => {
                                 setCustomPlaceholders((prev) => ({
                                   ...prev,
-                                  [key]: e.target.value
+                                  [key]: e.target.value,
                                 }));
                               }}
                               className="font-mono text-sm"
