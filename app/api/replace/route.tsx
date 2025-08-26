@@ -22,79 +22,66 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    // Read the file as array buffer
     const arrayBuffer = await file.arrayBuffer();
     const zip = new PizZip(arrayBuffer);
 
-    // Get the main document content
-    const documentXml = zip.files["word/document.xml"]?.asText();
-    if (!documentXml) {
-      return NextResponse.json(
-        { error: "Invalid document format" },
-        { status: 400 }
-      );
-    }
+    // Target body + header + footer XMLs
+    const xmlFiles = Object.keys(zip.files).filter((f) =>
+      f.match(/word\/(document|header\d*|footer\d*)\.xml/)
+    );
 
-    let updatedXml = documentXml;
+    const allKeysToReplace = [...foundKeys, ...unmatchedKeys].sort(
+      (a, b) => b.length - a.length
+    );
 
-    // Replace keys in order from longest to shortest to prevent partial replacements
-    const allKeysToReplace = [...foundKeys, ...unmatchedKeys]
-      .filter((key) => keys[key as keyof typeof keys] || keyMappings[key])
-      .sort((a, b) => b.length - a.length); // Longest first
+    xmlFiles.forEach((xmlPath) => {
+      let updatedXml = zip.files[xmlPath].asText();
 
-    console.log("[v0] Keys to replace (sorted):", allKeysToReplace);
+      allKeysToReplace.forEach((key: string) => {
+        let finalValue = "";
 
-    allKeysToReplace.forEach((key: string) => {
-      let finalValue = "";
+        if (keys[key as keyof typeof keys]) {
+          finalValue = keys[key as keyof typeof keys];
+        } else {
+          const ciMatch = Object.keys(keys).find(
+            (knownKey) => knownKey.toLowerCase() === key.toLowerCase()
+          );
+          if (ciMatch) {
+            finalValue = keys[ciMatch as keyof typeof keys];
+          } else if (keyMappings[key]) {
+            finalValue = keyMappings[key];
+          }
+        }
 
-      if (keys[key as keyof typeof keys]) {
-        finalValue = keys[key as keyof typeof keys];
-      } else if (keyMappings[key]) {
-        finalValue = keyMappings[key];
-      } else {
-        return; // Skip if no mapping exists
-      }
+        if (!finalValue) return;
 
-      const escapedValue = finalValue
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&apos;");
+        const escapedValue = finalValue
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
 
-      // More precise regex to avoid partial matches
-      const regex = new RegExp(
-        `(?<![A-Za-z0-9_])${escapeRegExp(key)}(?![A-Za-z0-9_])`,
-        "g"
-      );
-
-      const matches = updatedXml.match(regex);
-      if (matches && matches.length > 0) {
-        console.log(
-          `[v0] Replacing ${key} with ${escapedValue} (${matches.length} occurrences)`
+        const regex = new RegExp(
+          `(?<![A-Za-z0-9_])${escapeRegExp(key)}(?![A-Za-z0-9_])`,
+          "g"
         );
+
         updatedXml = updatedXml.replace(regex, escapedValue);
-      }
+      });
+
+      zip.file(xmlPath, updatedXml);
     });
 
-    // Update the document with the modified XML
-    zip.file("word/document.xml", updatedXml);
-
-    // Generate the updated document
     const buffer = zip.generate({
       type: "nodebuffer",
-      compression: "DEFLATE"
+      compression: "DEFLATE",
     });
 
-    // Convert Node.js Buffer -> Uint8Array
-    const uint8Array = new Uint8Array(buffer);
-
-    return new NextResponse(uint8Array, {
+    return new NextResponse(new Uint8Array(buffer), {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${file.name}"`
-      }
+        "Content-Disposition": `attachment; filename="${file.name}"`,
+      },
     });
   } catch (error) {
     console.error("Error processing document:", error);

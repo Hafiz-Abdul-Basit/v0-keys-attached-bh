@@ -1,24 +1,19 @@
 "use client";
-
+import toast from "react-hot-toast";
 import type React from "react";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Upload,
-  Download,
-  X,
-  FileText,
-  Plus,
-  Settings,
-  Map,
-} from "lucide-react";
+import { Upload, Download, X, FileText, Plus, Map } from "lucide-react";
 import { DocumentPreview } from "@/components/document-preview";
 import { KeysList } from "@/components/keys-list";
 import { downloadFile } from "@/lib/download-helper";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Checkbox from "@radix-ui/react-checkbox";
+import { CheckIcon } from "@radix-ui/react-icons";
 
 interface FileData {
   file: File;
@@ -41,7 +36,33 @@ export default function Home() {
   const [customPlaceholders, setCustomPlaceholders] = useState<{
     [key: string]: string;
   }>({});
+  const [selectedUnmatched, setSelectedUnmatched] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-open placeholder manager and populate when unmatched keys are found
+  useEffect(() => {
+    const currentUniqueUnmatched = [
+      ...new Set(uploadedFiles.flatMap((f) => f.unmatchedKeys)),
+    ];
+
+    // Add only new keys with empty values
+    setCustomPlaceholders((prev) => {
+      const updated = { ...prev };
+      let hasNew = false;
+
+      currentUniqueUnmatched.forEach((key) => {
+        if (!updated[key]) {
+          updated[key] = ""; // no auto "<<>>"
+          hasNew = true;
+        }
+      });
+
+      return hasNew ? updated : prev;
+    });
+
+    // By default, preselect them for easier removal/mapping
+    setSelectedUnmatched(currentUniqueUnmatched);
+  }, [uploadedFiles]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -250,10 +271,6 @@ export default function Home() {
     }
   };
 
-  const handleShowPlaceholderManager = () => {
-    setShowPlaceholderManager(!showPlaceholderManager);
-  };
-
   const currentFile = uploadedFiles[selectedFileIndex];
   const allMatchedKeys = uploadedFiles.flatMap((f) => f.matchedKeys);
   const allUnmatchedKeys = uploadedFiles.flatMap((f) => f.unmatchedKeys);
@@ -267,20 +284,312 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">DocX Key Replacer</h1>
           <div className="flex items-center gap-2">
-            <Button
-              onClick={handleShowPlaceholderManager}
-              variant={showPlaceholderManager ? "default" : "outline"}
-              className="flex items-center gap-2"
-              disabled={uploadedFiles.length === 0}
+            <Dialog.Root
+              open={showPlaceholderManager}
+              onOpenChange={setShowPlaceholderManager}
             >
-              <Map className="h-4 w-4" />
-              {showPlaceholderManager ? "Hide Mappings" : "Manage Mappings"}
-              {uniqueUnmatchedKeys.length > 0 && (
-                <Badge variant="secondary" className="ml-1">
-                  {uniqueUnmatchedKeys.length}
-                </Badge>
-              )}
-            </Button>
+              <Dialog.Trigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  disabled={uploadedFiles.length === 0}
+                >
+                  <Map className="h-4 w-4" />
+                  Manage Mappings
+                  {uniqueUnmatchedKeys.length > 0 && (
+                    <Badge variant="secondary" className="ml-1">
+                      {uniqueUnmatchedKeys.length}
+                    </Badge>
+                  )}
+                </Button>
+              </Dialog.Trigger>
+              <Dialog.Portal>
+                <Dialog.Overlay className="fixed inset-0 bg-black/50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+                <Dialog.Content
+                  className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2
+    w-full max-w-4xl max-h-[80vh] bg-white p-6 rounded-xl shadow-lg
+    data-[state=open]:animate-in data-[state=closed]:animate-out
+    data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0
+    data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95
+    overflow-y-auto space-y-6 z-[200]"
+                >
+                  {/* ✅ Top-right close icon */}
+                  <Dialog.Close asChild>
+                    <button
+                      className="absolute right-4 top-4 text-gray-400 hover:text-gray-600"
+                      aria-label="Close"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </Dialog.Close>
+
+                  <Dialog.Title className="flex items-center gap-2 text-lg font-semibold border-b pb-2">
+                    <Map className="h-5 w-5" />
+                    Placeholder Mapping
+                    {uniqueUnmatchedKeys.length > 0 && (
+                      <Badge variant="destructive" className="ml-2">
+                        {uniqueUnmatchedKeys.length} unmatched keys
+                      </Badge>
+                    )}
+                  </Dialog.Title>
+
+                  <Dialog.Description className="text-sm text-gray-500 mt-3 mb-4">
+                    Map keys found in your documents to the correct placeholders
+                  </Dialog.Description>
+
+                  <div className="space-y-6">
+                    {uniqueUnmatchedKeys.length > 0 && (
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="font-medium text-sm mb-2">
+                            Unmatched Keys Found in Documents:
+                          </h4>
+                          <p className="text-xs text-gray-500 mb-3">
+                            These keys were found in your documents but
+                            don&apos;t match any known placeholders. Map them to
+                            the correct placeholder format.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 mb-4">
+                          <Checkbox.Root
+                            id="select-all"
+                            checked={
+                              selectedUnmatched.length ===
+                              uniqueUnmatchedKeys.length
+                            }
+                            onCheckedChange={(checked) => {
+                              setSelectedUnmatched(
+                                checked ? [...uniqueUnmatchedKeys] : []
+                              );
+                            }}
+                            className="w-5 h-5 border border-gray-300 rounded data-[state=checked]:bg-blue-600 data-[state=checked]:text-white flex items-center justify-center"
+                          >
+                            <Checkbox.Indicator>
+                              <CheckIcon className="w-4 h-4" />
+                            </Checkbox.Indicator>
+                          </Checkbox.Root>
+                          <Label htmlFor="select-all" className="text-sm">
+                            Select All
+                          </Label>
+                        </div>
+                        <div className="grid gap-4">
+                          {uniqueUnmatchedKeys
+                            .filter(
+                              (key) => customPlaceholders[key] !== undefined
+                            )
+                            .map((key) => (
+                              <div
+                                key={key}
+                                className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200"
+                              >
+                                <Checkbox.Root
+                                  id={`select-${key}`}
+                                  checked={selectedUnmatched.includes(key)}
+                                  onCheckedChange={(checked) => {
+                                    setSelectedUnmatched((prev) =>
+                                      checked
+                                        ? [...prev, key]
+                                        : prev.filter((k) => k !== key)
+                                    );
+                                  }}
+                                  className="w-5 h-5 border border-gray-300 rounded mt-1 data-[state=checked]:bg-blue-600 data-[state=checked]:text-white flex items-center justify-center"
+                                >
+                                  <Checkbox.Indicator>
+                                    <CheckIcon className="w-4 h-4" />
+                                  </Checkbox.Indicator>
+                                </Checkbox.Root>
+
+                                <div className="flex-1 grid grid-cols-2 gap-4">
+                                  <div>
+                                    <Label
+                                      htmlFor={`key-${key}`}
+                                      className="text-xs text-gray-500 mb-1 block"
+                                    >
+                                      Key found in document:
+                                    </Label>
+                                    <div className="text-sm font-mono bg-white p-2 rounded break-words">
+                                      {key}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <Label
+                                      htmlFor={`value-${key}`}
+                                      className="text-xs text-gray-500 mb-1 block"
+                                    >
+                                      Map to placeholder:
+                                    </Label>
+                                    <Input
+                                      id={`value-${key}`}
+                                      value={customPlaceholders[key] || ""}
+                                      onChange={(e) => {
+                                        setCustomPlaceholders((prev) => ({
+                                          ...prev,
+                                          [key]: e.target.value,
+                                        }));
+                                      }}
+                                      className="font-mono text-sm w-full"
+                                      placeholder={`e.g., <<${key}>>`}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                        {/* ✅ Updated Remove Unselected */}
+                        <Button
+                          onClick={() => {
+                            console.log("Remove Unselected clicked", {
+                              selectedUnmatched,
+                              customPlaceholders,
+                              uniqueUnmatchedKeys,
+                            });
+                            const newCustom = { ...customPlaceholders };
+                            const removedCount = uniqueUnmatchedKeys.filter(
+                              (key) => !selectedUnmatched.includes(key)
+                            ).length;
+                            if (removedCount > 0) {
+                              uniqueUnmatchedKeys.forEach((key) => {
+                                if (!selectedUnmatched.includes(key)) {
+                                  delete newCustom[key];
+                                }
+                              });
+                              setCustomPlaceholders(newCustom);
+                              setSelectedUnmatched((prev) =>
+                                prev.filter(
+                                  (key) => newCustom[key] !== undefined
+                                )
+                              );
+                              alert(
+                                `Removed ${removedCount} unselected key(s)`
+                              );
+                            } else {
+                              alert("No unselected keys to remove");
+                            }
+                            console.log(
+                              `Removed ${removedCount} unselected key(s)`,
+                              {
+                                newCustom,
+                                newSelectedUnmatched: selectedUnmatched.filter(
+                                  (key) => newCustom[key] !== undefined
+                                ),
+                              }
+                            );
+                          }}
+                          variant="destructive"
+                          disabled={uniqueUnmatchedKeys.length === 0}
+                          className="mt-2 cursor-pointer z-[1000]"
+                        >
+                          Remove Unselected
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* ✅ Add Custom Mapping */}
+                    <div className="border-t pt-4 space-y-3">
+                      <h4 className="font-medium text-sm">
+                        Add Custom Mapping:
+                      </h4>
+                      <div className="grid grid-cols-5 gap-3 items-end">
+                        <div className="col-span-2">
+                          <Label
+                            htmlFor="new-key"
+                            className="text-xs text-gray-500 mb-1 block"
+                          >
+                            Key found in document:
+                          </Label>
+                          <Input
+                            id="new-key"
+                            placeholder="e.g., ABSENCESDATESLOSS"
+                            value={newPlaceholderKey}
+                            onChange={(e) =>
+                              setNewPlaceholderKey(e.target.value.toUpperCase())
+                            }
+                            className="w-full"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Label
+                            htmlFor="new-value"
+                            className="text-xs text-gray-500 mb-1 block"
+                          >
+                            Map to placeholder:
+                          </Label>
+                          <Input
+                            id="new-value"
+                            placeholder="e.g., <<ABSENCESDATESLOSS>>"
+                            value={newPlaceholderValue}
+                            onChange={(e) =>
+                              setNewPlaceholderValue(e.target.value)
+                            }
+                            className="w-full"
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <Button
+                            onClick={handleAddPlaceholder}
+                            className="flex items-center gap-2 w-full"
+                          >
+                            <Plus className="h-4 w-4" />
+                            Add
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ✅ Custom mappings list */}
+                    {Object.keys(customPlaceholders).filter(
+                      (key) => !uniqueUnmatchedKeys.includes(key)
+                    ).length > 0 && (
+                      <div className="space-y-2 border-t pt-4">
+                        <h4 className="font-medium text-sm">
+                          Custom Mappings:
+                          <Badge variant="outline" className="ml-2 text-xs">
+                            {
+                              Object.keys(customPlaceholders).filter(
+                                (key) => !uniqueUnmatchedKeys.includes(key)
+                              ).length
+                            }
+                          </Badge>
+                        </h4>
+                        <div className="grid gap-2 max-h-32 overflow-y-auto">
+                          {Object.entries(customPlaceholders)
+                            .filter(
+                              ([key]) => !uniqueUnmatchedKeys.includes(key)
+                            )
+                            .map(([key, value]) => (
+                              <div
+                                key={key}
+                                className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200"
+                              >
+                                <div className="flex-1">
+                                  <div className="text-sm font-mono break-all">
+                                    <span className="text-blue-600 font-semibold">
+                                      {key}
+                                    </span>
+                                    <span className="mx-2 text-gray-500">
+                                      →
+                                    </span>
+                                    <span>{value}</span>
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleRemovePlaceholder(key)}
+                                  className="h-8 w-8 p-0 hover:bg-red-100 hover:text-red-600"
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </Dialog.Content>
+              </Dialog.Portal>
+            </Dialog.Root>
+
             <Button
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2"
@@ -299,180 +608,6 @@ export default function Home() {
           />
         </div>
       </div>
-
-      {/* Placeholder Manager Panel */}
-      {showPlaceholderManager && (
-        <div className="border-b bg-muted/30 p-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Map className="h-5 w-5" />
-                Placeholder Mapping
-                {uniqueUnmatchedKeys.length > 0 && (
-                  <Badge variant="destructive" className="ml-2">
-                    {uniqueUnmatchedKeys.length} unmatched keys
-                  </Badge>
-                )}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Map keys found in your documents to the correct placeholders
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                {uniqueUnmatchedKeys.length > 0 && (
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="font-medium text-sm mb-2">
-                        Unmatched Keys Found in Documents:
-                      </h4>
-                      <p className="text-xs text-muted-foreground mb-3">
-                        These keys were found in your documents but don't match
-                        any known placeholders. Map them to the correct
-                        placeholder format.
-                      </p>
-                    </div>
-                    <div className="grid gap-3 max-h-64 overflow-y-auto p-1">
-                      {uniqueUnmatchedKeys.map((key) => (
-                        <div
-                          key={key}
-                          className="flex items-center gap-2 bg-background p-3 rounded-md border"
-                        >
-                          <div className="flex-1">
-                            <Label
-                              htmlFor={`key-${key}`}
-                              className="text-xs text-muted-foreground mb-1 block"
-                            >
-                              Key found in document:
-                            </Label>
-                            <div className="text-sm font-mono p-2 bg-muted rounded">
-                              {key}
-                            </div>
-                          </div>
-                          <div className="flex-1">
-                            <Label
-                              htmlFor={`value-${key}`}
-                              className="text-xs text-muted-foreground mb-1 block"
-                            >
-                              Map to placeholder:
-                            </Label>
-                            <Input
-                              id={`value-${key}`}
-                              value={customPlaceholders[key] || ""}
-                              onChange={(e) => {
-                                setCustomPlaceholders((prev) => ({
-                                  ...prev,
-                                  [key]: e.target.value,
-                                }));
-                              }}
-                              className="font-mono text-sm"
-                              placeholder={`<<${key}>>`}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="border-t pt-4">
-                  <h4 className="font-medium text-sm mb-3">
-                    Add Custom Mapping:
-                  </h4>
-                  <div className="grid grid-cols-5 gap-3">
-                    <div className="col-span-2">
-                      <Label
-                        htmlFor="new-key"
-                        className="text-xs text-muted-foreground mb-1 block"
-                      >
-                        Key found in document:
-                      </Label>
-                      <Input
-                        id="new-key"
-                        placeholder="e.g., ABSENCESDATESLOSS"
-                        value={newPlaceholderKey}
-                        onChange={(e) =>
-                          setNewPlaceholderKey(e.target.value.toUpperCase())
-                        }
-                      />
-                    </div>
-                    <div className="col-span-2">
-                      <Label
-                        htmlFor="new-value"
-                        className="text-xs text-muted-foreground mb-1 block"
-                      >
-                        Map to placeholder:
-                      </Label>
-                      <Input
-                        id="new-value"
-                        placeholder="e.g., <<ABSENCESDATESLOSS>>"
-                        value={newPlaceholderValue}
-                        onChange={(e) => setNewPlaceholderValue(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex items-end">
-                      <Button
-                        onClick={handleAddPlaceholder}
-                        className="flex items-center gap-2 w-full"
-                      >
-                        <Plus className="h-4 w-4" />
-                        Add
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                {Object.keys(customPlaceholders).filter(
-                  (key) => !uniqueUnmatchedKeys.includes(key)
-                ).length > 0 && (
-                  <div className="space-y-2 border-t pt-4">
-                    <h4 className="font-medium text-sm">
-                      Custom Mappings:
-                      <Badge variant="outline" className="ml-2 text-xs">
-                        {
-                          Object.keys(customPlaceholders).filter(
-                            (key) => !uniqueUnmatchedKeys.includes(key)
-                          ).length
-                        }
-                      </Badge>
-                    </h4>
-                    <div className="grid gap-2 max-h-32 overflow-y-auto">
-                      {Object.entries(customPlaceholders)
-                        .filter(([key]) => !uniqueUnmatchedKeys.includes(key))
-                        .map(([key, value]) => (
-                          <div
-                            key={key}
-                            className="flex items-center gap-2 bg-background p-3 rounded border"
-                          >
-                            <div className="flex-1">
-                              <div className="text-sm font-mono">
-                                <span className="text-blue-600 font-semibold">
-                                  {key}
-                                </span>
-                                <span className="mx-2 text-muted-foreground">
-                                  →
-                                </span>
-                                <span>{value}</span>
-                              </div>
-                            </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleRemovePlaceholder(key)}
-                              className="h-8 w-8 p-0 hover:bg-destructive hover:text-destructive-foreground"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
 
       {/* File List Bar */}
       {uploadedFiles.length > 0 && (
@@ -650,7 +785,6 @@ export default function Home() {
           </div>
         </div>
       </div>
-
       {/* Bottom Bar */}
       <div className="border-t bg-card p-4">
         <div className="flex justify-center gap-4">

@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
 import PizZip from "pizzip";
-import Docxtemplater from "docxtemplater";
 import keys from "../../../keys.json";
 
 export async function POST(request: NextRequest) {
@@ -12,116 +11,68 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    // Read the file as array buffer
     const arrayBuffer = await file.arrayBuffer();
     const zip = new PizZip(arrayBuffer);
 
-    // Extract text from all XML parts of the document
+    // Collect text from main doc + headers + footers
     let allText = "";
+    const xmlFiles = Object.keys(zip.files).filter((f) =>
+      f.match(/word\/(document|header\d*|footer\d*)\.xml/)
+    );
 
-    // Try to extract with docxtemplater first
-    try {
-      const doc = new Docxtemplater(zip, {
-        paragraphLoop: true,
-        linebreaks: true
-      });
-      doc.render();
-      allText += doc.getFullText() + " ";
-    } catch (error) {
-      console.log(
-        "[v0] Error with docxtemplater, trying direct XML extraction"
-      );
-    }
-
-    // Also extract directly from document.xml to catch table content
-    try {
-      const documentXml = zip.file("word/document.xml")?.asText();
-      if (documentXml) {
-        const textContent = documentXml
-          .replace(/<[^>]*>/g, " ") // strip XML tags
-          .replace(/\s+/g, " ") // normalize whitespace
+    xmlFiles.forEach((xmlPath) => {
+      const xml = zip.file(xmlPath)?.asText();
+      if (xml) {
+        const textContent = xml
+          .replace(/<[^>]*>/g, " ")
+          .replace(/\s+/g, " ")
           .trim();
         allText += " " + textContent;
       }
-    } catch (error) {
-      console.log("[v0] Could not extract from document.xml");
-    }
+    });
 
     const text = allText.trim();
-    console.log("[v0] Full extracted text:", text);
+    console.log("[v0] Extracted text (body + headers/footers):", text);
 
     const matchedKeys: string[] = [];
     const unmatchedKeys: string[] = [];
 
-    // First, find all known keys that exist in the document
-    Object.keys(keys).forEach((key) => {
-      if (text.includes(key)) {
-        matchedKeys.push(key);
-      }
-    });
+    // 1. Detect @placeholders
+    const atKeyPattern = /@[a-zA-Z0-9_]+/g;
+    const atKeys = text.match(atKeyPattern) || [];
 
-    // Detect ONLY uppercase keys (4+ characters)
-    const uppercasePattern = /\b[A-Z]{4,}[A-Z0-9]*\b/g;
-    const allUppercaseKeys = text.match(uppercasePattern) || [];
+    atKeys.forEach((key) => {
+      const lowerKey = key.toLowerCase();
+      const matched = Object.keys(keys).find(
+        (knownKey) => knownKey.toLowerCase() === lowerKey
+      );
 
-    // Remove duplicates and sort by length (longest first)
-    const uniqueUppercaseKeys = [...new Set(allUppercaseKeys)].sort(
-      (a, b) => b.length - a.length
-    );
-
-    console.log("[v0] All uppercase keys found:", uniqueUppercaseKeys);
-
-    // Now check each uppercase key against our known keys
-    uniqueUppercaseKeys.forEach((key) => {
-      // Skip if already matched
-      if (matchedKeys.includes(key)) return;
-
-      // Skip if it's a subset of an already matched key
-      // BUT only if it's not a real key in keys.json
-      if (
-        matchedKeys.some(
-          (matchedKey) =>
-            matchedKey.includes(key) &&
-            matchedKey !== key &&
-            !uniqueUppercaseKeys.includes(key)
-        )
-      ) {
-        return;
-      }
-
-      // Skip if it's just a number or trivial acronym
-      if (
-        key.match(/^\d+$/) ||
-        key.match(/^[A-Z]{1,3}$/) ||
-        ["THE", "AND", "FOR", "WITH", "THIS", "THAT", "HAVE", "FROM"].includes(
-          key
-        )
-      ) {
-        return;
-      }
-
-      // If not a known key, add to unmatched
-      if (!keys[key as keyof typeof keys]) {
+      if (matched) {
+        matchedKeys.push(matched);
+      } else {
         unmatchedKeys.push(key);
       }
     });
 
-    // Filter out any keys that are partial matches of longer unmatched keys
-    const finalUnmatchedKeys = unmatchedKeys.filter((key) => {
-      return !unmatchedKeys.some(
-        (otherKey) =>
-          otherKey !== key &&
-          otherKey.length > key.length &&
-          otherKey.includes(key)
+    // 2. Detect plain UPPERCASE KEYS (≥4 chars, numbers allowed)
+    const uppercasePattern = /\b[A-Z]{4,}[A-Z0-9_]*\b/g;
+    const uppercaseKeys = text.match(uppercasePattern) || [];
+
+    uppercaseKeys.forEach((key) => {
+      const matched = Object.keys(keys).find(
+        (knownKey) => knownKey.toLowerCase() === key.toLowerCase()
       );
+
+      if (matched) {
+        matchedKeys.push(matched);
+      } else {
+        unmatchedKeys.push(key);
+      }
     });
 
-    console.log("[v0] Found matching keys:", matchedKeys);
-    console.log("[v0] Found unmatched keys:", finalUnmatchedKeys);
-
     return NextResponse.json({
-      matchedKeys,
-      unmatchedKeys: finalUnmatchedKeys
+      matchedKeys: [...new Set(matchedKeys)],
+      unmatchedKeys: [...new Set(unmatchedKeys)],
     });
   } catch (error) {
     console.error("Error analyzing document:", error);
