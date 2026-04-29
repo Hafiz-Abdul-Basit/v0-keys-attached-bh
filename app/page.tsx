@@ -44,23 +44,23 @@ function extractKeys(data: unknown): string[] {
 const AVAILABLE_KEYS: string[] = extractKeys(keysData);
 
 interface FileData {
-  file: File;
-  matchedKeys: string[];
-  unmatchedKeys: string[];
-  replacedFile?: File;
+  file: File
+  matchedKeys: string[]
+  unmatchedKeys: string[]
+  replacedFile?: File
 }
 
 export default function Home() {
-  const [uploadedFiles, setUploadedFiles] = useState<FileData[]>([]);
-  const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [keyMappings, setKeyMappings] = useState<{ [key: string]: string }>({});
-  const [previewKey, setPreviewKey] = useState(0);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [showPlaceholderManager, setShowPlaceholderManager] = useState(false);
-  const [newPlaceholderKey, setNewPlaceholderKey] = useState("");
-  const [newPlaceholderValue, setNewPlaceholderValue] = useState("");
+  const [uploadedFiles, setUploadedFiles] = useState<FileData[]>([])
+  const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [keyMappings, setKeyMappings] = useState<{ [key: string]: string }>({})
+  const [previewKey, setPreviewKey] = useState(0)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [showPlaceholderManager, setShowPlaceholderManager] = useState(false)
+  const [newPlaceholderKey, setNewPlaceholderKey] = useState("")
+  const [newPlaceholderValue, setNewPlaceholderValue] = useState("")
   const [customPlaceholders, setCustomPlaceholders] = useState<{
     [key: string]: string;
   }>({});
@@ -70,9 +70,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const currentUniqueUnmatched = [
-      ...new Set(uploadedFiles.flatMap((f) => f.unmatchedKeys)),
-    ];
+    const currentUniqueUnmatched = [...new Set(uploadedFiles.flatMap((f) => f.unmatchedKeys))]
 
     setCustomPlaceholders((prev) => {
       const updated = { ...prev };
@@ -93,14 +91,14 @@ export default function Home() {
   }, [uploadedFiles]);
 
   const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
+    e.preventDefault()
+    setIsDragOver(true)
+  }
 
   const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  };
+    e.preventDefault()
+    setIsDragOver(false)
+  }
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -134,8 +132,7 @@ export default function Home() {
           body: formData,
         });
         if (response.ok) {
-          const { matchedKeys: foundKeys, unmatchedKeys: unfoundKeys } =
-            await response.json();
+          const { matchedKeys: foundKeys, unmatchedKeys: unfoundKeys } = await response.json()
           newFileData.push({
             file,
             matchedKeys: foundKeys,
@@ -148,9 +145,9 @@ export default function Home() {
       }
     }
 
-    setUploadedFiles((prev) => [...prev, ...newFileData]);
+    setUploadedFiles((prev) => [...prev, ...newFileData])
     if (uploadedFiles.length === 0 && newFileData.length > 0) {
-      setSelectedFileIndex(0);
+      setSelectedFileIndex(0)
     }
     setIsUploading(false);
 
@@ -202,7 +199,7 @@ export default function Home() {
     const name = uploadedFiles[index].file.name;
     setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
     if (selectedFileIndex >= uploadedFiles.length - 1) {
-      setSelectedFileIndex(Math.max(0, uploadedFiles.length - 2));
+      setSelectedFileIndex(Math.max(0, uploadedFiles.length - 2))
     }
     toast(`Removed ${name}`, { icon: "🗑️", duration: 2000 });
   };
@@ -245,7 +242,7 @@ export default function Home() {
   };
 
   const handleReplaceKeys = async () => {
-    if (uploadedFiles.length === 0) return;
+    if (uploadedFiles.length === 0) return
 
     // Warn if unmatched keys still have no mapping filled in
     const unmappedStillEmpty = uniqueUnmatchedKeys.filter(
@@ -279,7 +276,7 @@ export default function Home() {
           body: formData,
         });
         if (!response.ok) {
-          throw new Error(`Failed to process document ${fileData.file.name}`);
+          throw new Error(`Failed to process document ${fileData.file.name}`)
         }
         const blob = await response.blob();
         const replacedFile = new File([blob], fileData.file.name, {
@@ -302,7 +299,7 @@ export default function Home() {
       setIsProcessing(false);
       setProcessingIndex(-1);
     }
-  };
+  }
 
   const handleDownload = async () => {
     const processedFiles = uploadedFiles.filter((f) => f.replacedFile);
@@ -312,7 +309,7 @@ export default function Home() {
     }
     try {
       if (processedFiles.length === 1) {
-        const fileData = processedFiles[0];
+        const fileData = processedFiles[0]
         const blob = new Blob([fileData.replacedFile!], {
           type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         });
@@ -334,7 +331,7 @@ export default function Home() {
       console.error("Error downloading documents:", error);
       toast.error("Error downloading documents. Please try again.");
     }
-  };
+  }
 
   const currentFile = uploadedFiles[selectedFileIndex];
   const allMatchedKeys = uploadedFiles.flatMap((f) => f.matchedKeys);
