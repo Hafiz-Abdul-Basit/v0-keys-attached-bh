@@ -7,7 +7,7 @@ interface PlaceholderAutocompleteProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
-  availableKeys: string[]; // keys from keys.json
+  availableKeys: string[]; 
   id?: string;
   className?: string;
 }
