@@ -132,16 +132,21 @@ export default function Home() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const docxFiles = Array.from(e.dataTransfer.files).filter(
-      (f) =>
-        f.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    );
-    if (!docxFiles.length) {
-      toast.error("Please upload .docx files only");
+    const supportedFiles = Array.from(e.dataTransfer.files).filter((f) => {
+      const name = f.name.toLowerCase();
+      return (
+        f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        f.type === "text/html" ||
+        name.endsWith(".docx") ||
+        name.endsWith(".html") ||
+        name.endsWith(".htm")
+      );
+    });
+    if (!supportedFiles.length) {
+      toast.error("Please upload .docx, .html, or .htm files only");
       return;
     }
-    processFiles(docxFiles);
+    processFiles(supportedFiles);
   };
 
   const processFiles = async (files: File[]) => {
@@ -203,16 +208,21 @@ export default function Home() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
-    const docxFiles = Array.from(e.target.files).filter(
-      (f) =>
-        f.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    );
-    if (!docxFiles.length) {
-      toast.error("Please upload .docx files only");
+    const supportedFiles = Array.from(e.target.files).filter((f) => {
+      const name = f.name.toLowerCase();
+      return (
+        f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        f.type === "text/html" ||
+        name.endsWith(".docx") ||
+        name.endsWith(".html") ||
+        name.endsWith(".htm")
+      );
+    });
+    if (!supportedFiles.length) {
+      toast.error("Please upload .docx, .html, or .htm files only");
       return;
     }
-    await processFiles(docxFiles);
+    await processFiles(supportedFiles);
     e.target.value = "";
   };
 
