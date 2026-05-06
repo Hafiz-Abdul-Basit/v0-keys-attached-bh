@@ -118,11 +118,8 @@ export async function POST(request: NextRequest) {
         const norm = normalizeKey(token);
         let replaced = false;
 
-        // For HTML, we don't need XML escaping
-        const finalValue = value
-          .replace(/^<</, "")
-          .replace(/>>$/, "")
-          .trim();
+        // For HTML files, use the value as-is (with <<>> brackets)
+        const htmlReplaceValue = value;
 
         // =====================
         // Pattern A: <<...>>
@@ -132,7 +129,7 @@ export async function POST(request: NextRequest) {
             const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
             const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
             if (reLiteral.test(processedHtml)) {
-              processedHtml = processedHtml.replace(reLiteral, finalValue);
+              processedHtml = processedHtml.replace(reLiteral, htmlReplaceValue);
               replaced = true;
             }
           } catch (_) {}
@@ -148,7 +145,7 @@ export async function POST(request: NextRequest) {
               "gi",
             );
             if (re.test(processedHtml)) {
-              processedHtml = processedHtml.replace(re, finalValue);
+              processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
             }
           } catch (_) {}
@@ -164,7 +161,7 @@ export async function POST(request: NextRequest) {
               "g",
             );
             if (re.test(processedHtml)) {
-              processedHtml = processedHtml.replace(re, finalValue);
+              processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
             }
           } catch (_) {}
@@ -186,7 +183,7 @@ export async function POST(request: NextRequest) {
                 "gi",
               );
               if (re.test(processedHtml)) {
-                processedHtml = processedHtml.replace(re, finalValue);
+                processedHtml = processedHtml.replace(re, htmlReplaceValue);
                 replaced = true;
               }
             } catch (_) {}
