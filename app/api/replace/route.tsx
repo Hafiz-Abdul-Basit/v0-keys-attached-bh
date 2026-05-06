@@ -111,12 +111,17 @@ export async function POST(request: NextRequest) {
       const htmlContent = await file.text();
       let processedHtml = htmlContent;
 
+      console.log("[v0] HTML file tokens to process:", allTokens);
+      console.log("[v0] HTML content length:", htmlContent.length);
+
       allTokens.forEach((token) => {
         const norm = normalizeKey(token);
         let replaced = false;
 
         // For HTML files, replace plain text keys with placeholder format <<KEY>>
         const htmlReplaceValue = `<<${norm}>>`;
+        
+        console.log("[v0] Processing HTML token:", token, "→ norm:", norm, "→ replace with:", htmlReplaceValue);
 
         // =====================
         // Pattern A: <<...>>
@@ -157,11 +162,17 @@ export async function POST(request: NextRequest) {
               `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
               "g",
             );
+            console.log("[v0] Testing Pattern C (ALL CAPS) for:", norm);
             if (re.test(processedHtml)) {
+              console.log("[v0] Pattern C matched! Replacing with:", htmlReplaceValue);
               processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
+            } else {
+              console.log("[v0] Pattern C did not match for:", norm);
             }
-          } catch (_) {}
+          } catch (e) {
+            console.log("[v0] Pattern C error:", e);
+          }
         }
 
         // =====================
