@@ -111,9 +111,17 @@ export async function POST(request: NextRequest) {
       const htmlContent = await file.text();
       let processedHtml = htmlContent;
 
+      console.log("[v0] HTML replacement started. Total tokens:", allTokens.length);
+      console.log("[v0] Tokens to replace:", allTokens);
+
       allTokens.forEach((token) => {
         const value = resolveValueFully(token, keyMappings);
-        if (!value) return;
+        if (!value) {
+          console.log("[v0] No value resolved for token:", token);
+          return;
+        }
+
+        console.log("[v0] Processing token:", token, "→", value);
 
         const norm = normalizeKey(token);
         let replaced = false;
@@ -132,10 +140,13 @@ export async function POST(request: NextRequest) {
             const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
             const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
             if (reLiteral.test(processedHtml)) {
-              processedHtml = processedHtml.replace(reLiteral, `<<${finalValue}>>`);
+              console.log("[v0] Found pattern A (<<>>):", token);
+              processedHtml = processedHtml.replace(reLiteral, finalValue);
               replaced = true;
             }
-          } catch (_) {}
+          } catch (e) {
+            console.log("[v0] Error in pattern A:", e);
+          }
         }
 
         // =====================
@@ -148,10 +159,13 @@ export async function POST(request: NextRequest) {
               "gi",
             );
             if (re.test(processedHtml)) {
+              console.log("[v0] Found pattern B (@token):", token);
               processedHtml = processedHtml.replace(re, finalValue);
               replaced = true;
             }
-          } catch (_) {}
+          } catch (e) {
+            console.log("[v0] Error in pattern B:", e);
+          }
         }
 
         // =====================
@@ -164,10 +178,13 @@ export async function POST(request: NextRequest) {
               "g",
             );
             if (re.test(processedHtml)) {
+              console.log("[v0] Found pattern C (ALL_CAPS):", token);
               processedHtml = processedHtml.replace(re, finalValue);
               replaced = true;
             }
-          } catch (_) {}
+          } catch (e) {
+            console.log("[v0] Error in pattern C:", e);
+          }
         }
 
         // =====================
@@ -186,13 +203,22 @@ export async function POST(request: NextRequest) {
                 "gi",
               );
               if (re.test(processedHtml)) {
+                console.log("[v0] Found pattern D (free text):", token);
                 processedHtml = processedHtml.replace(re, finalValue);
                 replaced = true;
               }
-            } catch (_) {}
+            } catch (e) {
+              console.log("[v0] Error in pattern D:", e);
+            }
           }
         }
+
+        if (!replaced) {
+          console.log("[v0] Token not replaced:", token);
+        }
       });
+
+      console.log("[v0] HTML replacement complete");
 
       return new NextResponse(processedHtml, {
         headers: {
