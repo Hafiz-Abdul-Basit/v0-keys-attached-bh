@@ -11,31 +11,54 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const zip = new PizZip(arrayBuffer);
-
-    // Collect text from main doc + headers + footers
+    const fileName = file.name.toLowerCase();
+    const isHtmlFile = fileName.endsWith(".html") || fileName.endsWith(".htm");
+    
     let allText = "";
-    const xmlFiles = Object.keys(zip.files).filter((f) =>
-      f.match(/word\/(document|header\d*|footer\d*)\.xml/),
-    );
 
-    xmlFiles.forEach((xmlPath) => {
-      const xml = zip.file(xmlPath)?.asText();
-      if (xml) {
-        // First, extract <<…>> tokens with spaces preserved BEFORE stripping tags
-        const doubleBracketMatches = xml.match(/<<[^<>]+>>/g) || [];
-        if (doubleBracketMatches.length) {
-          allText += " " + doubleBracketMatches.join(" ");
-        }
-
-        const textContent = xml
-          .replace(/<[^>]*>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim();
-        allText += " " + textContent;
+    if (isHtmlFile) {
+      // Handle HTML/HTM files
+      const htmlContent = await file.text();
+      
+      // Extract <<…>> tokens with spaces preserved
+      const doubleBracketMatches = htmlContent.match(/<<[^<>]+>>/g) || [];
+      if (doubleBracketMatches.length) {
+        allText += " " + doubleBracketMatches.join(" ");
       }
-    });
+
+      // Strip HTML tags and extract text content
+      const textContent = htmlContent
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      allText += " " + textContent;
+    } else {
+      // Handle DOCX files
+      const arrayBuffer = await file.arrayBuffer();
+      const zip = new PizZip(arrayBuffer);
+
+      // Collect text from main doc + headers + footers
+      const xmlFiles = Object.keys(zip.files).filter((f) =>
+        f.match(/word\/(document|header\d*|footer\d*)\.xml/),
+      );
+
+      xmlFiles.forEach((xmlPath) => {
+        const xml = zip.file(xmlPath)?.asText();
+        if (xml) {
+          // First, extract <<…>> tokens with spaces preserved BEFORE stripping tags
+          const doubleBracketMatches = xml.match(/<<[^<>]+>>/g) || [];
+          if (doubleBracketMatches.length) {
+            allText += " " + doubleBracketMatches.join(" ");
+          }
+
+          const textContent = xml
+            .replace(/<[^>]*>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          allText += " " + textContent;
+        }
+      });
+    }
 
     const text = allText.trim();
 
