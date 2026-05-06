@@ -392,10 +392,14 @@ export default function Home() {
     try {
       if (processedFiles.length === 1) {
         const fd = processedFiles[0];
+        const fileExt = fd.file.name.toLowerCase();
+        const isHtmlFile = fileExt.endsWith(".html") || fileExt.endsWith(".htm");
+        const mimeType = isHtmlFile
+          ? "text/html; charset=utf-8"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        
         downloadFile(
-          new Blob([fd.replacedFile!], {
-            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          }),
+          new Blob([fd.replacedFile!], { type: mimeType }),
           fd.file.name,
         );
         toast.success(`Downloaded ${fd.file.name}`);
