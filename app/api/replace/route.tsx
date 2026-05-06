@@ -112,14 +112,11 @@ export async function POST(request: NextRequest) {
       let processedHtml = htmlContent;
 
       allTokens.forEach((token) => {
-        const value = resolveValueFully(token, keyMappings);
-        if (!value) return;
-
         const norm = normalizeKey(token);
         let replaced = false;
 
-        // For HTML files, use the value as-is (with <<>> brackets)
-        const htmlReplaceValue = value;
+        // For HTML files, replace plain text keys with placeholder format <<KEY>>
+        const htmlReplaceValue = `<<${norm}>>`;
 
         // =====================
         // Pattern A: <<...>>
