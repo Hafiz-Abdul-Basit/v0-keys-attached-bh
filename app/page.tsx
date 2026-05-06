@@ -665,8 +665,8 @@ export default function Home() {
                       <CardTitle className="flex items-center justify-between flex-wrap gap-2">
                         <span>Available Placeholders</span>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant="outline" className="text-xs">
-                            {totalUniqueKeys} unique keys
+                          <Badge className="text-xs bg-black text-white hover:bg-black/90">
+                            {AVAILABLE_KEYS.length} total keys
                           </Badge>
                           {uniqueMatchedKeys.length > 0 && (
                             <Badge
