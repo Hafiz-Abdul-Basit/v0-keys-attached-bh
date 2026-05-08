@@ -190,47 +190,37 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      // Post-processing: Replace empty <> placeholders with <<KEY>> based on nearby key names
-      // Find all empty angle bracket patterns and try to match them with keys
-      const emptyBracketPattern = /<\s*>/g;
-      const matches = processedHtml.match(emptyBracketPattern) || [];
-      
-      if (matches.length > 0) {
-        // Find positions of all keys in the text
-        const keyPositions: { key: string; norm: string; positions: number[] }[] = [];
-        
-        allTokens.forEach((token) => {
-          const norm = normalizeKey(token);
-          const keyRegex = new RegExp(
-            `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
-            "g",
-          );
-          let match;
-          while ((match = keyRegex.exec(processedHtml)) !== null) {
-            const existing = keyPositions.find(kp => kp.norm === norm);
-            if (existing) {
-              existing.positions.push(match.index);
-            } else {
-              keyPositions.push({ key: token, norm, positions: [match.index] });
-            }
-          }
-        });
+      // Post-processing: Replace remaining empty <> placeholders
+      // Pattern to match empty brackets with possible HTML tags around them
+      // Matches patterns like: <> or <>  or ><></td> etc.
+      const emptyBracketPatterns = [
+        />\s*<>\s*</g,        // ><>< (inside HTML tags)
+        />\s*<\s*>\s*</g,     // >< >< (with spaces)
+        /<\s*>\s*/g,          // <>  (simple pattern)
+      ];
 
-        // Replace empty <> with nearest key's placeholder
-        let emptyBracketIndex = 0;
-        processedHtml = processedHtml.replace(emptyBracketPattern, () => {
-          if (emptyBracketIndex < allTokens.length) {
-            const token = allTokens[emptyBracketIndex];
+      // Replace empty placeholders with keys in order they appear
+      let keyIndex = 0;
+      for (const pattern of emptyBracketPatterns) {
+        if (keyIndex >= allTokens.length) break;
+        
+        processedHtml = processedHtml.replace(pattern, () => {
+          if (keyIndex < allTokens.length) {
+            const token = allTokens[keyIndex];
             const norm = normalizeKey(token);
-            emptyBracketIndex++;
+            keyIndex++;
+            
+            // Preserve the HTML structure around the bracket
+            if (pattern.source.includes('><')) {
+              return `><<${norm}>><`;
+            }
             return `<<${norm}>>`;
           }
-          return '<>';
+          // Return the matched string if we've run out of keys
+          const match = pattern.exec(processedHtml);
+          return match ? match[0] : '<>';
         });
       }
-
-      // Remove debug logs
-      // (Already cleaned up above)
 
       return new NextResponse(processedHtml, {
         headers: {
