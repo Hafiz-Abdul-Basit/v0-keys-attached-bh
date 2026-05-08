@@ -112,7 +112,11 @@ export async function POST(request: NextRequest) {
       let processedHtml = htmlContent;
 
       console.log("[v0] HTML file tokens to process:", allTokens);
+      console.log("[v0] foundKeys:", foundKeys);
+      console.log("[v0] unmatchedKeys:", unmatchedKeys);
+      console.log("[v0] keyMappings:", Object.keys(keyMappings));
       console.log("[v0] HTML content length:", htmlContent.length);
+      console.log("[v0] HTML content preview:", htmlContent.substring(0, 500));
 
       allTokens.forEach((token) => {
         const norm = normalizeKey(token);
@@ -121,7 +125,7 @@ export async function POST(request: NextRequest) {
         // For HTML files, replace plain text keys with placeholder format <<KEY>>
         const htmlReplaceValue = `<<${norm}>>`;
         
-        console.log("[v0] Processing HTML token:", token, "→ norm:", norm, "→ replace with:", htmlReplaceValue);
+        console.log("[v0] Processing HTML token:", token, "→ norm:", norm, "→ replace with:", htmlReplaceValue, "norm.length:", norm.length);
 
         // =====================
         // Pattern A: <<...>>
