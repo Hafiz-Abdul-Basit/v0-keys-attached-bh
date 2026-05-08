@@ -111,12 +111,7 @@ export async function POST(request: NextRequest) {
       const htmlContent = await file.text();
       let processedHtml = htmlContent;
 
-      console.log("[v0] HTML file tokens to process:", allTokens);
-      console.log("[v0] foundKeys:", foundKeys);
-      console.log("[v0] unmatchedKeys:", unmatchedKeys);
-      console.log("[v0] keyMappings:", Object.keys(keyMappings));
-      console.log("[v0] HTML content length:", htmlContent.length);
-      console.log("[v0] HTML content preview:", htmlContent.substring(0, 500));
+
 
       allTokens.forEach((token) => {
         const norm = normalizeKey(token);
@@ -124,8 +119,6 @@ export async function POST(request: NextRequest) {
 
         // For HTML files, replace plain text keys with placeholder format <<KEY>>
         const htmlReplaceValue = `<<${norm}>>`;
-        
-        console.log("[v0] Processing HTML token:", token, "→ norm:", norm, "→ replace with:", htmlReplaceValue, "norm.length:", norm.length);
 
         // =====================
         // Pattern A: <<...>>
@@ -166,17 +159,11 @@ export async function POST(request: NextRequest) {
               `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
               "g",
             );
-            console.log("[v0] Testing Pattern C (ALL CAPS) for:", norm);
             if (re.test(processedHtml)) {
-              console.log("[v0] Pattern C matched! Replacing with:", htmlReplaceValue);
               processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
-            } else {
-              console.log("[v0] Pattern C did not match for:", norm);
             }
-          } catch (e) {
-            console.log("[v0] Pattern C error:", e);
-          }
+          } catch (_) {}
         }
 
         // =====================
@@ -202,6 +189,48 @@ export async function POST(request: NextRequest) {
           }
         }
       });
+
+      // Post-processing: Replace empty <> placeholders with <<KEY>> based on nearby key names
+      // Find all empty angle bracket patterns and try to match them with keys
+      const emptyBracketPattern = /<\s*>/g;
+      const matches = processedHtml.match(emptyBracketPattern) || [];
+      
+      if (matches.length > 0) {
+        // Find positions of all keys in the text
+        const keyPositions: { key: string; norm: string; positions: number[] }[] = [];
+        
+        allTokens.forEach((token) => {
+          const norm = normalizeKey(token);
+          const keyRegex = new RegExp(
+            `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
+            "g",
+          );
+          let match;
+          while ((match = keyRegex.exec(processedHtml)) !== null) {
+            const existing = keyPositions.find(kp => kp.norm === norm);
+            if (existing) {
+              existing.positions.push(match.index);
+            } else {
+              keyPositions.push({ key: token, norm, positions: [match.index] });
+            }
+          }
+        });
+
+        // Replace empty <> with nearest key's placeholder
+        let emptyBracketIndex = 0;
+        processedHtml = processedHtml.replace(emptyBracketPattern, () => {
+          if (emptyBracketIndex < allTokens.length) {
+            const token = allTokens[emptyBracketIndex];
+            const norm = normalizeKey(token);
+            emptyBracketIndex++;
+            return `<<${norm}>>`;
+          }
+          return '<>';
+        });
+      }
+
+      // Remove debug logs
+      // (Already cleaned up above)
 
       return new NextResponse(processedHtml, {
         headers: {
