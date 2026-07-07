@@ -99,53 +99,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const zip = new PizZip(arrayBuffer);
-
-    const xmlFiles = Object.keys(zip.files).filter((f) =>
-      f.match(/word\/(document|header\d*|footer\d*)\.xml/),
-    );
+    const fileName = file.name.toLowerCase();
+    const isHtmlFile = fileName.endsWith(".html") || fileName.endsWith(".htm");
 
     const allTokens = [
       ...new Set([...foundKeys, ...unmatchedKeys, ...Object.keys(keyMappings)]),
     ].sort((a, b) => b.length - a.length);
 
-    xmlFiles.forEach((xmlPath) => {
-      let xml = zip.files[xmlPath].asText();
+    if (isHtmlFile) {
+      // Handle HTML/HTM files
+      const htmlContent = await file.text();
+      let processedHtml = htmlContent;
+
+
 
       allTokens.forEach((token) => {
-        const value = resolveValueFully(token, keyMappings);
-        if (!value) return;
-
-        const escaped = escapeXml(value);
         const norm = normalizeKey(token);
         let replaced = false;
 
+        // For HTML files, replace plain text keys with placeholder format <<KEY>>
+        const htmlReplaceValue = `<<${norm}>>`;
+
         // =====================
-        // Pattern A: <<...>>  — Handle BOTH literal AND XML-encoded brackets
+        // Pattern A: <<...>>
         // =====================
         if (norm.length > 0 && !replaced) {
           try {
             const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
-            const finalValue = unwrapPlaceholder(escaped);
-
-            // 1. Try literal angle brackets: <<TOKEN>>
             const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
-            if (reLiteral.test(xml)) {
-              xml = xml.replace(reLiteral, `<<${finalValue}>>`);
+            if (reLiteral.test(processedHtml)) {
+              processedHtml = processedHtml.replace(reLiteral, htmlReplaceValue);
               replaced = true;
-            }
-
-            // 2. Try XML-encoded angle brackets: &lt;&lt;TOKEN&gt;&gt;
-            if (!replaced) {
-              const reEncoded = new RegExp(
-                `&lt;&lt;\\s*${inner}\\s*&gt;&gt;`,
-                "gi",
-              );
-              if (reEncoded.test(xml)) {
-                xml = xml.replace(reEncoded, `&lt;&lt;${finalValue}&gt;&gt;`);
-                replaced = true;
-              }
             }
           } catch (_) {}
         }
@@ -159,8 +143,8 @@ export async function POST(request: NextRequest) {
               `@${escapeRegExp(token.replace(/^@/, ""))}`,
               "gi",
             );
-            if (re.test(xml)) {
-              xml = xml.replace(re, escaped);
+            if (re.test(processedHtml)) {
+              processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
             }
           } catch (_) {}
@@ -175,8 +159,8 @@ export async function POST(request: NextRequest) {
               `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
               "g",
             );
-            if (re.test(xml)) {
-              xml = xml.replace(re, escaped);
+            if (re.test(processedHtml)) {
+              processedHtml = processedHtml.replace(re, htmlReplaceValue);
               replaced = true;
             }
           } catch (_) {}
@@ -197,8 +181,8 @@ export async function POST(request: NextRequest) {
                 `(?<![A-Za-z0-9])${escapeRegExp(freeText)}(?![A-Za-z0-9])`,
                 "gi",
               );
-              if (re.test(xml)) {
-                xml = xml.replace(re, escaped);
+              if (re.test(processedHtml)) {
+                processedHtml = processedHtml.replace(re, htmlReplaceValue);
                 replaced = true;
               }
             } catch (_) {}
@@ -206,18 +190,162 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      zip.file(xmlPath, xml);
-    });
+      // Post-processing: Replace remaining empty <> placeholders
+      // Pattern to match empty brackets with possible HTML tags around them
+      // Matches patterns like: <> or <>  or ><></td> etc.
+      const emptyBracketPatterns = [
+        />\s*<>\s*</g,        // ><>< (inside HTML tags)
+        />\s*<\s*>\s*</g,     // >< >< (with spaces)
+        /<\s*>\s*/g,          // <>  (simple pattern)
+      ];
 
-    const buffer = zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
+      // Replace empty placeholders with keys in order they appear
+      let keyIndex = 0;
+      for (const pattern of emptyBracketPatterns) {
+        if (keyIndex >= allTokens.length) break;
+        
+        processedHtml = processedHtml.replace(pattern, () => {
+          if (keyIndex < allTokens.length) {
+            const token = allTokens[keyIndex];
+            const norm = normalizeKey(token);
+            keyIndex++;
+            
+            // Preserve the HTML structure around the bracket
+            if (pattern.source.includes('><')) {
+              return `><<${norm}>><`;
+            }
+            return `<<${norm}>>`;
+          }
+          // Return the matched string if we've run out of keys
+          const match = pattern.exec(processedHtml);
+          return match ? match[0] : '<>';
+        });
+      }
 
-    return new NextResponse(new Uint8Array(buffer), {
-      headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${file.name}"`,
-      },
-    });
+      return new NextResponse(processedHtml, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${file.name}"`,
+        },
+      });
+    } else {
+      // Handle DOCX files (original logic)
+      const arrayBuffer = await file.arrayBuffer();
+      const zip = new PizZip(arrayBuffer);
+
+      const xmlFiles = Object.keys(zip.files).filter((f) =>
+        f.match(/word\/(document|header\d*|footer\d*)\.xml/),
+      );
+
+      xmlFiles.forEach((xmlPath) => {
+        let xml = zip.files[xmlPath].asText();
+
+        allTokens.forEach((token) => {
+          const value = resolveValueFully(token, keyMappings);
+          if (!value) return;
+
+          const escaped = escapeXml(value);
+          const norm = normalizeKey(token);
+          let replaced = false;
+
+          // =====================
+          // Pattern A: <<...>>  — Handle BOTH literal AND XML-encoded brackets
+          // =====================
+          if (norm.length > 0 && !replaced) {
+            try {
+              const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
+              const finalValue = unwrapPlaceholder(escaped);
+
+              // 1. Try literal angle brackets: <<TOKEN>>
+              const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
+              if (reLiteral.test(xml)) {
+                xml = xml.replace(reLiteral, `<<${finalValue}>>`);
+                replaced = true;
+              }
+
+              // 2. Try XML-encoded angle brackets: &lt;&lt;TOKEN&gt;&gt;
+              if (!replaced) {
+                const reEncoded = new RegExp(
+                  `&lt;&lt;\\s*${inner}\\s*&gt;&gt;`,
+                  "gi",
+                );
+                if (reEncoded.test(xml)) {
+                  xml = xml.replace(reEncoded, `&lt;&lt;${finalValue}&gt;&gt;`);
+                  replaced = true;
+                }
+              }
+            } catch (_) {}
+          }
+
+          // =====================
+          // Pattern B: @token
+          // =====================
+          if (!replaced && /^[A-Za-z0-9_]+$/.test(token.replace(/^@/, ""))) {
+            try {
+              const re = new RegExp(
+                `@${escapeRegExp(token.replace(/^@/, ""))}`,
+                "gi",
+              );
+              if (re.test(xml)) {
+                xml = xml.replace(re, escaped);
+                replaced = true;
+              }
+            } catch (_) {}
+          }
+
+          // =====================
+          // Pattern C: ALL CAPS (e.g., CAMPUSNAME)
+          // =====================
+          if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
+            try {
+              const re = new RegExp(
+                `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
+                "g",
+              );
+              if (re.test(xml)) {
+                xml = xml.replace(re, escaped);
+                replaced = true;
+              }
+            } catch (_) {}
+          }
+
+          // =====================
+          // Pattern D: Free text (exact word boundary match)
+          // =====================
+          if (!replaced) {
+            const freeText = token
+              .replace(/^<</, "")
+              .replace(/>>$/, "")
+              .replace(/^@/, "")
+              .trim();
+            if (freeText.length > 0) {
+              try {
+                const re = new RegExp(
+                  `(?<![A-Za-z0-9])${escapeRegExp(freeText)}(?![A-Za-z0-9])`,
+                  "gi",
+                );
+                if (re.test(xml)) {
+                  xml = xml.replace(re, escaped);
+                  replaced = true;
+                }
+              } catch (_) {}
+            }
+          }
+        });
+
+        zip.file(xmlPath, xml);
+      });
+
+      const buffer = zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
+
+      return new NextResponse(new Uint8Array(buffer), {
+        headers: {
+          "Content-Type":
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "Content-Disposition": `attachment; filename="${file.name}"`,
+        },
+      });
+    }
   } catch (error) {
     console.error("Error processing document:", error);
     return NextResponse.json(

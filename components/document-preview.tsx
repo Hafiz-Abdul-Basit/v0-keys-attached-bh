@@ -17,27 +17,43 @@ export function DocumentPreview({
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const loadDocxPreview = async () => {
+    const loadPreview = async () => {
       if (!containerRef.current) return;
       try {
-        const { renderAsync } = await import("docx-preview");
-        containerRef.current.innerHTML = "";
-        await renderAsync(file, containerRef.current, undefined, {
-          className: "docx-wrapper",
-          inWrapper: true,
-          ignoreWidth: false,
-          ignoreHeight: false,
-          ignoreFonts: false,
-          breakPages: true,
-          ignoreLastRenderedPageBreak: true,
-        });
+        const fileName = file.name.toLowerCase();
+        const isHtmlFile = fileName.endsWith(".html") || fileName.endsWith(".htm");
 
-        highlightKeys(
-          containerRef.current,
-          matchedKeys,
-          unmatchedKeys,
-          isReplaced,
-        );
+        if (isHtmlFile) {
+          // Handle HTML/HTM files
+          const htmlContent = await file.text();
+          containerRef.current.innerHTML = htmlContent;
+          highlightKeys(
+            containerRef.current,
+            matchedKeys,
+            unmatchedKeys,
+            isReplaced,
+          );
+        } else {
+          // Handle DOCX files
+          const { renderAsync } = await import("docx-preview");
+          containerRef.current.innerHTML = "";
+          await renderAsync(file, containerRef.current, undefined, {
+            className: "docx-wrapper",
+            inWrapper: true,
+            ignoreWidth: false,
+            ignoreHeight: false,
+            ignoreFonts: false,
+            breakPages: true,
+            ignoreLastRenderedPageBreak: true,
+          });
+
+          highlightKeys(
+            containerRef.current,
+            matchedKeys,
+            unmatchedKeys,
+            isReplaced,
+          );
+        }
       } catch (error) {
         console.error("Error rendering document:", error);
         if (containerRef.current) {
@@ -46,7 +62,7 @@ export function DocumentPreview({
         }
       }
     };
-    loadDocxPreview();
+    loadPreview();
   }, [file, matchedKeys, unmatchedKeys, isReplaced]);
 
   return (

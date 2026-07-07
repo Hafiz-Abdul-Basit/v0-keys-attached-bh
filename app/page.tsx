@@ -132,16 +132,21 @@ export default function Home() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    const docxFiles = Array.from(e.dataTransfer.files).filter(
-      (f) =>
-        f.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    );
-    if (!docxFiles.length) {
-      toast.error("Please upload .docx files only");
+    const supportedFiles = Array.from(e.dataTransfer.files).filter((f) => {
+      const name = f.name.toLowerCase();
+      return (
+        f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        f.type === "text/html" ||
+        name.endsWith(".docx") ||
+        name.endsWith(".html") ||
+        name.endsWith(".htm")
+      );
+    });
+    if (!supportedFiles.length) {
+      toast.error("Please upload .docx, .html, or .htm files only");
       return;
     }
-    processFiles(docxFiles);
+    processFiles(supportedFiles);
   };
 
   const processFiles = async (files: File[]) => {
@@ -203,16 +208,21 @@ export default function Home() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
-    const docxFiles = Array.from(e.target.files).filter(
-      (f) =>
-        f.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    );
-    if (!docxFiles.length) {
-      toast.error("Please upload .docx files only");
+    const supportedFiles = Array.from(e.target.files).filter((f) => {
+      const name = f.name.toLowerCase();
+      return (
+        f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        f.type === "text/html" ||
+        name.endsWith(".docx") ||
+        name.endsWith(".html") ||
+        name.endsWith(".htm")
+      );
+    });
+    if (!supportedFiles.length) {
+      toast.error("Please upload .docx, .html, or .htm files only");
       return;
     }
-    await processFiles(docxFiles);
+    await processFiles(supportedFiles);
     e.target.value = "";
   };
 
@@ -321,8 +331,10 @@ export default function Home() {
         });
         if (!res.ok) throw new Error(`Failed to process ${fileData.file.name}`);
         const blob = await res.blob();
+        const fileExt = fileData.file.name.toLowerCase();
+        const isHtmlFile = fileExt.endsWith(".html") || fileExt.endsWith(".htm");
         const replacedFile = new File([blob], fileData.file.name, {
-          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          type: isHtmlFile ? "text/html" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         });
 
         /* ── RE-ANALYZE replaced file for accurate highlighting ── */
@@ -380,10 +392,14 @@ export default function Home() {
     try {
       if (processedFiles.length === 1) {
         const fd = processedFiles[0];
+        const fileExt = fd.file.name.toLowerCase();
+        const isHtmlFile = fileExt.endsWith(".html") || fileExt.endsWith(".htm");
+        const mimeType = isHtmlFile
+          ? "text/html; charset=utf-8"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        
         downloadFile(
-          new Blob([fd.replacedFile!], {
-            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          }),
+          new Blob([fd.replacedFile!], { type: mimeType }),
           fd.file.name,
         );
         toast.success(`Downloaded ${fd.file.name}`);
@@ -489,13 +505,13 @@ export default function Home() {
                 className="flex items-center gap-2"
               >
                 <Upload className="h-4 w-4" />
-                Upload .docx Files
+                Upload .docx, .html, .htm Files
               </Button>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".docx"
+              accept=".docx,.html,.htm"
               multiple
               onChange={handleFileUpload}
               className="hidden"
