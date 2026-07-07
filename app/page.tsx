@@ -433,11 +433,19 @@ export default function Home() {
         {/* Top Bar */}
         <div className="border-b bg-card p-4 flex-shrink-0">
           <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold">
-              DocX Key Replacer{" "}
-              <span className="text-sm text-gray-500">
-                ( Developed by Abdul Basit )
+            <h1 className="text-2xl font-bold flex items-center gap-3">
+              <span>
+                DocX Key Replacer{" "}
+                <span className="text-sm text-gray-500">
+                  ( Developed by Abdul Basit )
+                </span>
               </span>
+              {uploadedFiles.length > 0 && (
+                <Badge variant="secondary" className="text-xs mt-3">
+                  {uploadedFiles.length} file
+                  {uploadedFiles.length !== 1 ? "s" : ""} uploaded
+                </Badge>
+              )}
             </h1>
 
             <div className="flex items-center gap-2">
@@ -505,6 +513,7 @@ export default function Home() {
               {uploadedFiles.map((fileData, index) => (
                 <div
                   key={index}
+                  title={fileData.file.name}
                   className={`flex items-center gap-2 px-3 py-1 rounded-md border cursor-pointer transition-colors ${selectedFileIndex === index ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}
                   onClick={() => setSelectedFileIndex(index)}
                 >
