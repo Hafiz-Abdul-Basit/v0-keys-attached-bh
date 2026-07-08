@@ -79,6 +79,188 @@ function unwrapPlaceholder(val: string): string {
   return val;
 }
 
+/**
+ * Apply Pattern A/B/C/D token replacement against a plain (already-escaped) text string.
+ * This is the same matching logic as before, but now operates on a paragraph's
+ * MERGED text instead of the raw XML file — so tokens split across multiple
+ * <w:r> runs (e.g. "(SCHOOL NAME)" split into "(SCHOOL " + "NAME)") still match.
+ */
+function applyTokenReplacements(
+  text: string,
+  allTokens: string[],
+  keyMappings: Record<string, string>,
+  isHtml: boolean,
+): string {
+  let out = text;
+
+  allTokens.forEach((token) => {
+    const norm = normalizeKey(token);
+    let replaced = false;
+
+    const value = isHtml ? null : resolveValueFully(token, keyMappings);
+    if (!isHtml && !value) return;
+
+    const escaped = isHtml ? "" : escapeXml(value as string);
+    const htmlReplaceValue = `<<${norm}>>`;
+
+    // =====================
+    // Pattern A: <<...>>  (literal + XML-encoded)
+    // =====================
+    if (norm.length > 0 && !replaced) {
+      try {
+        const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
+
+        const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
+        if (reLiteral.test(out)) {
+          out = out.replace(
+            reLiteral,
+            isHtml ? htmlReplaceValue : `<<${unwrapPlaceholder(escaped)}>>`,
+          );
+          replaced = true;
+        }
+
+        if (!replaced && !isHtml) {
+          const reEncoded = new RegExp(
+            `&lt;&lt;\\s*${inner}\\s*&gt;&gt;`,
+            "gi",
+          );
+          if (reEncoded.test(out)) {
+            out = out.replace(
+              reEncoded,
+              `&lt;&lt;${unwrapPlaceholder(escaped)}&gt;&gt;`,
+            );
+            replaced = true;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // =====================
+    // Pattern B: @token
+    // =====================
+    if (!replaced && /^[A-Za-z0-9_]+$/.test(token.replace(/^@/, ""))) {
+      try {
+        const re = new RegExp(
+          `@${escapeRegExp(token.replace(/^@/, ""))}`,
+          "gi",
+        );
+        if (re.test(out)) {
+          out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
+          replaced = true;
+        }
+      } catch (_) {}
+    }
+
+    // =====================
+    // Pattern C: ALL CAPS (e.g., CAMPUSNAME)
+    // =====================
+    if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
+      try {
+        const re = new RegExp(
+          `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
+          "g",
+        );
+        if (re.test(out)) {
+          out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
+          replaced = true;
+        }
+      } catch (_) {}
+    }
+
+    // =====================
+    // Pattern D: Free text (exact word boundary match)
+    // =====================
+    if (!replaced) {
+      const freeText = token
+        .replace(/^<</, "")
+        .replace(/>>$/, "")
+        .replace(/^@/, "")
+        .trim();
+      if (freeText.length > 0) {
+        try {
+          // allow whitespace variance between words (handles split-run spacing quirks)
+          const innerFree = freeText
+            .split(/\s+/)
+            .map((w) => w.split("").map(escapeRegExp).join("[\\s]*"))
+            .join("[\\s]+");
+          const re = new RegExp(
+            `(?<![A-Za-z0-9])${innerFree}(?![A-Za-z0-9])`,
+            "gi",
+          );
+          if (re.test(out)) {
+            out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
+            replaced = true;
+          }
+        } catch (_) {}
+      }
+    }
+  });
+
+  return out;
+}
+
+/**
+ * Merge all <w:t> nodes within each <w:p>...</w:p> paragraph into one logical
+ * string, run token replacement against that merged string, then write the
+ * result into the FIRST <w:t> node and empty out the rest. This fixes cases
+ * where Word splits a single visible phrase (e.g. "(SCHOOL NAME)") across
+ * multiple runs, which previously made it invisible to regex matching.
+ */
+function replaceTokensInDocxXml(
+  xml: string,
+  allTokens: string[],
+  keyMappings: Record<string, string>,
+): string {
+  // Normalize self-closing <w:t/> to <w:t></w:t> so they're uniformly handled.
+  // IMPORTANT: must not match on <w:tab/>, <w:tblPr/>, <w:trPr/>, <w:tcPr/>,
+  // <w:titlePgBelow/>, etc. — anything starting with "w:t" but NOT the exact
+  // <w:t> tag. The (?![a-zA-Z]) lookahead prevents matching those substrings.
+  let normalized = xml.replace(/<w:t(?![a-zA-Z])([^>]*)\/>/g, "<w:t$1></w:t>");
+
+  normalized = normalized.replace(
+    /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g,
+    (paragraph) => {
+      const wtRegex = /<w:t(?![a-zA-Z])([^>]*)>([\s\S]*?)<\/w:t>/g;
+      const matches = Array.from(paragraph.matchAll(wtRegex));
+
+      if (matches.length === 0) return paragraph;
+
+      const fullText = matches.map((m) => m[2]).join("");
+      const newFullText = applyTokenReplacements(
+        fullText,
+        allTokens,
+        keyMappings,
+        false,
+      );
+
+      if (newFullText === fullText) return paragraph;
+
+      let result = "";
+      let lastIndex = 0;
+
+      matches.forEach((m, i) => {
+        const matchIndex = m.index ?? 0;
+        result += paragraph.slice(lastIndex, matchIndex);
+
+        let attrs = m[1] || "";
+        if (i === 0 && !/xml:space=/.test(attrs)) {
+          attrs = `${attrs} xml:space="preserve"`;
+        }
+
+        const content = i === 0 ? newFullText : "";
+        result += `<w:t${attrs}>${content}</w:t>`;
+
+        lastIndex = matchIndex + m[0].length;
+      });
+
+      result += paragraph.slice(lastIndex);
+      return result;
+    },
+  );
+
+  return normalized;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -107,118 +289,38 @@ export async function POST(request: NextRequest) {
     ].sort((a, b) => b.length - a.length);
 
     if (isHtmlFile) {
-      // Handle HTML/HTM files
+      // Handle HTML/HTM files (unchanged — HTML text isn't split across runs)
       const htmlContent = await file.text();
-      let processedHtml = htmlContent;
-
-
-
-      allTokens.forEach((token) => {
-        const norm = normalizeKey(token);
-        let replaced = false;
-
-        // For HTML files, replace plain text keys with placeholder format <<KEY>>
-        const htmlReplaceValue = `<<${norm}>>`;
-
-        // =====================
-        // Pattern A: <<...>>
-        // =====================
-        if (norm.length > 0 && !replaced) {
-          try {
-            const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
-            const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
-            if (reLiteral.test(processedHtml)) {
-              processedHtml = processedHtml.replace(reLiteral, htmlReplaceValue);
-              replaced = true;
-            }
-          } catch (_) {}
-        }
-
-        // =====================
-        // Pattern B: @token
-        // =====================
-        if (!replaced && /^[A-Za-z0-9_]+$/.test(token.replace(/^@/, ""))) {
-          try {
-            const re = new RegExp(
-              `@${escapeRegExp(token.replace(/^@/, ""))}`,
-              "gi",
-            );
-            if (re.test(processedHtml)) {
-              processedHtml = processedHtml.replace(re, htmlReplaceValue);
-              replaced = true;
-            }
-          } catch (_) {}
-        }
-
-        // =====================
-        // Pattern C: ALL CAPS (e.g., CAMPUSNAME)
-        // =====================
-        if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
-          try {
-            const re = new RegExp(
-              `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
-              "g",
-            );
-            if (re.test(processedHtml)) {
-              processedHtml = processedHtml.replace(re, htmlReplaceValue);
-              replaced = true;
-            }
-          } catch (_) {}
-        }
-
-        // =====================
-        // Pattern D: Free text (exact word boundary match)
-        // =====================
-        if (!replaced) {
-          const freeText = token
-            .replace(/^<</, "")
-            .replace(/>>$/, "")
-            .replace(/^@/, "")
-            .trim();
-          if (freeText.length > 0) {
-            try {
-              const re = new RegExp(
-                `(?<![A-Za-z0-9])${escapeRegExp(freeText)}(?![A-Za-z0-9])`,
-                "gi",
-              );
-              if (re.test(processedHtml)) {
-                processedHtml = processedHtml.replace(re, htmlReplaceValue);
-                replaced = true;
-              }
-            } catch (_) {}
-          }
-        }
-      });
+      let processedHtml = applyTokenReplacements(
+        htmlContent,
+        allTokens,
+        keyMappings,
+        true,
+      );
 
       // Post-processing: Replace remaining empty <> placeholders
-      // Pattern to match empty brackets with possible HTML tags around them
-      // Matches patterns like: <> or <>  or ><></td> etc.
       const emptyBracketPatterns = [
-        />\s*<>\s*</g,        // ><>< (inside HTML tags)
-        />\s*<\s*>\s*</g,     // >< >< (with spaces)
-        /<\s*>\s*/g,          // <>  (simple pattern)
+        />\s*<>\s*</g,
+        />\s*<\s*>\s*</g,
+        /<\s*>\s*/g,
       ];
 
-      // Replace empty placeholders with keys in order they appear
       let keyIndex = 0;
       for (const pattern of emptyBracketPatterns) {
         if (keyIndex >= allTokens.length) break;
-        
-        processedHtml = processedHtml.replace(pattern, () => {
+
+        processedHtml = processedHtml.replace(pattern, (match) => {
           if (keyIndex < allTokens.length) {
             const token = allTokens[keyIndex];
             const norm = normalizeKey(token);
             keyIndex++;
-            
-            // Preserve the HTML structure around the bracket
-            if (pattern.source.includes('><')) {
+
+            if (pattern.source.includes("><")) {
               return `><<${norm}>><`;
             }
             return `<<${norm}>>`;
           }
-          // Return the matched string if we've run out of keys
-          const match = pattern.exec(processedHtml);
-          return match ? match[0] : '<>';
+          return match;
         });
       }
 
@@ -229,7 +331,7 @@ export async function POST(request: NextRequest) {
         },
       });
     } else {
-      // Handle DOCX files (original logic)
+      // Handle DOCX files — now with paragraph-level run merging
       const arrayBuffer = await file.arrayBuffer();
       const zip = new PizZip(arrayBuffer);
 
@@ -238,105 +340,15 @@ export async function POST(request: NextRequest) {
       );
 
       xmlFiles.forEach((xmlPath) => {
-        let xml = zip.files[xmlPath].asText();
-
-        allTokens.forEach((token) => {
-          const value = resolveValueFully(token, keyMappings);
-          if (!value) return;
-
-          const escaped = escapeXml(value);
-          const norm = normalizeKey(token);
-          let replaced = false;
-
-          // =====================
-          // Pattern A: <<...>>  — Handle BOTH literal AND XML-encoded brackets
-          // =====================
-          if (norm.length > 0 && !replaced) {
-            try {
-              const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
-              const finalValue = unwrapPlaceholder(escaped);
-
-              // 1. Try literal angle brackets: <<TOKEN>>
-              const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
-              if (reLiteral.test(xml)) {
-                xml = xml.replace(reLiteral, `<<${finalValue}>>`);
-                replaced = true;
-              }
-
-              // 2. Try XML-encoded angle brackets: &lt;&lt;TOKEN&gt;&gt;
-              if (!replaced) {
-                const reEncoded = new RegExp(
-                  `&lt;&lt;\\s*${inner}\\s*&gt;&gt;`,
-                  "gi",
-                );
-                if (reEncoded.test(xml)) {
-                  xml = xml.replace(reEncoded, `&lt;&lt;${finalValue}&gt;&gt;`);
-                  replaced = true;
-                }
-              }
-            } catch (_) {}
-          }
-
-          // =====================
-          // Pattern B: @token
-          // =====================
-          if (!replaced && /^[A-Za-z0-9_]+$/.test(token.replace(/^@/, ""))) {
-            try {
-              const re = new RegExp(
-                `@${escapeRegExp(token.replace(/^@/, ""))}`,
-                "gi",
-              );
-              if (re.test(xml)) {
-                xml = xml.replace(re, escaped);
-                replaced = true;
-              }
-            } catch (_) {}
-          }
-
-          // =====================
-          // Pattern C: ALL CAPS (e.g., CAMPUSNAME)
-          // =====================
-          if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
-            try {
-              const re = new RegExp(
-                `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
-                "g",
-              );
-              if (re.test(xml)) {
-                xml = xml.replace(re, escaped);
-                replaced = true;
-              }
-            } catch (_) {}
-          }
-
-          // =====================
-          // Pattern D: Free text (exact word boundary match)
-          // =====================
-          if (!replaced) {
-            const freeText = token
-              .replace(/^<</, "")
-              .replace(/>>$/, "")
-              .replace(/^@/, "")
-              .trim();
-            if (freeText.length > 0) {
-              try {
-                const re = new RegExp(
-                  `(?<![A-Za-z0-9])${escapeRegExp(freeText)}(?![A-Za-z0-9])`,
-                  "gi",
-                );
-                if (re.test(xml)) {
-                  xml = xml.replace(re, escaped);
-                  replaced = true;
-                }
-              } catch (_) {}
-            }
-          }
-        });
-
-        zip.file(xmlPath, xml);
+        const xml = zip.files[xmlPath].asText();
+        const newXml = replaceTokensInDocxXml(xml, allTokens, keyMappings);
+        zip.file(xmlPath, newXml);
       });
 
-      const buffer = zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
+      const buffer = zip.generate({
+        type: "nodebuffer",
+        compression: "DEFLATE",
+      });
 
       return new NextResponse(new Uint8Array(buffer), {
         headers: {
