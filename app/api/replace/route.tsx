@@ -37,24 +37,25 @@ function resolveValueFully(
 
   let resolved: string | null = null;
 
-  // 1. Direct key lookup in keys.json
-  if (typedKeys[raw]) resolved = typedKeys[raw];
-  else {
-    const norm = normalizeKey(raw);
-    const hit = knownKeysList.find((k) => normalizeKey(k) === norm);
-    if (hit) resolved = typedKeys[hit];
-  }
-
-  // 2. Custom mapping (direct or normalized)
-  if (resolved === null && keyMappings[raw]) {
+  // 1. Custom mapping FIRST — user's explicit override wins
+  if (keyMappings[raw]) {
     resolved = keyMappings[raw];
-  }
-  if (resolved === null) {
+  } else {
     const norm = normalizeKey(raw);
     const mappingHit = Object.keys(keyMappings).find(
       (k) => normalizeKey(k) === norm,
     );
     if (mappingHit) resolved = keyMappings[mappingHit];
+  }
+
+  // 2. Fall back to direct key lookup in keys.json if no custom mapping given
+  if (resolved === null) {
+    if (typedKeys[raw]) resolved = typedKeys[raw];
+    else {
+      const norm = normalizeKey(raw);
+      const hit = knownKeysList.find((k) => normalizeKey(k) === norm);
+      if (hit) resolved = typedKeys[hit];
+    }
   }
 
   if (resolved === null) return null;
@@ -81,21 +82,35 @@ function unwrapPlaceholder(val: string): string {
 
 /**
  * Apply Pattern A/B/C/D token replacement against a plain (already-escaped) text string.
- * This is the same matching logic as before, but now operates on a paragraph's
- * MERGED text instead of the raw XML file — so tokens split across multiple
- * <w:r> runs (e.g. "(SCHOOL NAME)" split into "(SCHOOL " + "NAME)") still match.
+ *
+ * IMPORTANT FIX: `foundNormSet` contains the normalized form of every token that was
+ * already discovered in proper <<TOKEN>> bracket form somewhere in the document.
+ * For those tokens we ONLY ever attempt Pattern A (the bracketed match). We never
+ * fall through to Patterns B/C/C2/D for them, because those are "loose" fallback
+ * matchers meant for placeholders that DON'T use bracket syntax (e.g. bare
+ * "(SCHOOL NAME)" style tokens). Running loose matching on a token that's already
+ * properly bracketed is what caused plain label text like "Grade:" to get
+ * clobbered by the "GRADE" placeholder replacement — Pattern D is case-insensitive
+ * free-text matching and doesn't know "Grade" the label word is different from
+ * "<<GRADE>>" the placeholder.
  */
 function applyTokenReplacements(
   text: string,
   allTokens: string[],
   keyMappings: Record<string, string>,
   isHtml: boolean,
+  foundNormSet: Set<string>,
 ): string {
   let out = text;
 
   allTokens.forEach((token) => {
     const norm = normalizeKey(token);
     let replaced = false;
+
+    // If this token was already found in bracket form (<<TOKEN>>) anywhere in the
+    // document, it's unambiguous — restrict it to Pattern A only. Loose matching
+    // (B/C/C2/D) is reserved for tokens that never appeared in bracket form at all.
+    const bracketedOnly = foundNormSet.has(norm);
 
     const value = isHtml ? null : resolveValueFully(token, keyMappings);
     if (!isHtml && !value) return;
@@ -135,6 +150,10 @@ function applyTokenReplacements(
       } catch (_) {}
     }
 
+    // Token was already unambiguously bracketed — stop here, never fall through
+    // to loose text matching that could clobber unrelated label text.
+    if (bracketedOnly) return;
+
     // =====================
     // Pattern B: @token
     // =====================
@@ -162,6 +181,25 @@ function applyTokenReplacements(
         );
         if (re.test(out)) {
           out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
+          replaced = true;
+        }
+      } catch (_) {}
+    }
+
+    // =====================
+    // Pattern C2: _TOKEN_ (underscore-wrapped, EXACT case-sensitive match)
+    // =====================
+    if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
+      try {
+        const reUnderscore = new RegExp(
+          `_\\s*${escapeRegExp(norm)}\\s*_`,
+          "g", // no "i" flag — must match the exact-case token only
+        );
+        if (reUnderscore.test(out)) {
+          out = out.replace(
+            reUnderscore,
+            isHtml ? htmlReplaceValue : `<<${unwrapPlaceholder(escaped)}>>`,
+          );
           replaced = true;
         }
       } catch (_) {}
@@ -210,6 +248,7 @@ function replaceTokensInDocxXml(
   xml: string,
   allTokens: string[],
   keyMappings: Record<string, string>,
+  foundNormSet: Set<string>,
 ): string {
   // Normalize self-closing <w:t/> to <w:t></w:t> so they're uniformly handled.
   // IMPORTANT: must not match on <w:tab/>, <w:tblPr/>, <w:trPr/>, <w:tcPr/>,
@@ -231,6 +270,7 @@ function replaceTokensInDocxXml(
         allTokens,
         keyMappings,
         false,
+        foundNormSet,
       );
 
       if (newFullText === fullText) return paragraph;
@@ -288,6 +328,12 @@ export async function POST(request: NextRequest) {
       ...new Set([...foundKeys, ...unmatchedKeys, ...Object.keys(keyMappings)]),
     ].sort((a, b) => b.length - a.length);
 
+    // Tokens that were already discovered in proper <<TOKEN>> bracket form get
+    // restricted to Pattern A only (see applyTokenReplacements). This is what
+    // stops a placeholder like <<GRADE>> from also matching plain label text
+    // such as "Grade:" via the loose fallback patterns.
+    const foundNormSet = new Set(foundKeys.map(normalizeKey));
+
     if (isHtmlFile) {
       // Handle HTML/HTM files (unchanged — HTML text isn't split across runs)
       const htmlContent = await file.text();
@@ -296,6 +342,7 @@ export async function POST(request: NextRequest) {
         allTokens,
         keyMappings,
         true,
+        foundNormSet,
       );
 
       // Post-processing: Replace remaining empty <> placeholders
@@ -341,7 +388,12 @@ export async function POST(request: NextRequest) {
 
       xmlFiles.forEach((xmlPath) => {
         const xml = zip.files[xmlPath].asText();
-        const newXml = replaceTokensInDocxXml(xml, allTokens, keyMappings);
+        const newXml = replaceTokensInDocxXml(
+          xml,
+          allTokens,
+          keyMappings,
+          foundNormSet,
+        );
         zip.file(xmlPath, newXml);
       });
 

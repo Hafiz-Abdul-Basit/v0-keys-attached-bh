@@ -505,7 +505,7 @@ export default function Home() {
                 className="flex items-center gap-2"
               >
                 <Upload className="h-4 w-4" />
-                Upload .docx, .html, .htm Files
+                Upload .docx
               </Button>
             </div>
             <input
