@@ -30,6 +30,7 @@ import {
   keyTargetSpecs,
   normalizeKey,
   resolveToken,
+  type AnalyzeOptions,
   type EsignAnalysis,
   type EsignTokenForm,
 } from "./html-template";
@@ -60,6 +61,8 @@ export interface DocxBuildOptions {
   /** raw tokens the user chose NOT to replace */
   exclude?: string[];
   replaceKeys?: boolean;
+  /** also rewrite key names found as plain text (default true) */
+  plainText?: boolean;
 }
 
 export interface DocxBuildStats {
@@ -664,7 +667,10 @@ function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
 
 /* ───────────────────────────── analyse ───────────────────────────── */
 
-export function analyzeEsignDocx(input: ArrayBuffer | Uint8Array): DocxAnalysis {
+export function analyzeEsignDocx(
+  input: ArrayBuffer | Uint8Array,
+  options: AnalyzeOptions = {},
+): DocxAnalysis {
   const zip = new PizZip(input instanceof Uint8Array ? input : new Uint8Array(input));
   const parts = listDocxParts(zip);
 
@@ -693,7 +699,7 @@ export function analyzeEsignDocx(input: ArrayBuffer | Uint8Array): DocxAnalysis 
     });
   }
 
-  const analysis = analyzeEsignText(text.replace(/\s+/g, " ").trim());
+  const analysis = analyzeEsignText(text.replace(/\s+/g, " ").trim(), options);
   return { ...analysis, candidates };
 }
 
@@ -820,7 +826,7 @@ export function buildEsignDocx(
   const stats: DocxBuildStats = { keys: {}, markers: {}, skipped: [] };
 
   // key rules come from the same analysis the client saw
-  const analysis = analyzeEsignDocx(input);
+  const analysis = analyzeEsignDocx(input, { plainText: options.plainText });
   const rules: TextRule[] = [];
   if (replaceKeys) {
     for (const spec of keyTargetSpecs(analysis, mappings)) {

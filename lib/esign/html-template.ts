@@ -381,15 +381,26 @@ export function plainTextRegex(norm: string): RegExp {
 const TEXT_CHECKBOX_RE = /<\s*c\s*(\d+)\s*(c?)\s*>/gi;
 const TEXT_TEXTBOX_RE = /<\s*t\s*(\d+)\s*>/gi;
 
-export function analyzeEsignHtml(html: string): EsignAnalysis {
-  return analyzeEsignText(htmlToText(html));
+export interface AnalyzeOptions {
+  /** also look for key names written as plain text (default true) */
+  plainText?: boolean;
+}
+
+export function analyzeEsignHtml(
+  html: string,
+  options: AnalyzeOptions = {},
+): EsignAnalysis {
+  return analyzeEsignText(htmlToText(html), options);
 }
 
 /**
  * Token / marker discovery on a plain-text projection. Shared by the HTML
  * analyser and the DOCX analyser (which builds its text from <w:t> runs).
  */
-export function analyzeEsignText(text: string): EsignAnalysis {
+export function analyzeEsignText(
+  text: string,
+  options: AnalyzeOptions = {},
+): EsignAnalysis {
   const tokens = new Map<string, EsignToken>();
   const addToken = (raw: string, form: EsignTokenForm) => {
     const norm = normalizeKey(raw);
@@ -441,6 +452,7 @@ export function analyzeEsignText(text: string): EsignAnalysis {
   const overlaps = (s: number, e: number) =>
     consumed.some(([cs, ce]) => s < ce && e > cs);
   for (const [norm, keyName] of KEY_BY_NORM) {
+    if (options.plainText === false) break;
     if (norm.length < PLAIN_MIN_LENGTH || strictNorms.has(norm)) continue;
     const re = plainTextRegex(norm);
     for (const m of text.matchAll(re)) {

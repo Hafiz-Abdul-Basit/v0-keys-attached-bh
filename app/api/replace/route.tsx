@@ -1,415 +1,54 @@
 import { type NextRequest, NextResponse } from "next/server";
-import PizZip from "pizzip";
-import keys from "../../../keys.json";
+import { legacyReplace } from "../../../lib/esign/legacy-adapter";
 
-function escapeRegExp(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function escapeXml(s: string) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** Strip <<>>, @, spaces, lowercase → "CAMPUSNAME" */
-function normalizeKey(raw: string): string {
-  return raw
-    .replace(/^<</, "")
-    .replace(/>>$/, "")
-    .replace(/^@/, "")
-    .replace(/\s+/g, "")
-    .toUpperCase()
-    .trim();
-}
-
-const typedKeys = keys as Record<string, string>;
-const knownKeysList = Object.keys(typedKeys);
-
-/**
- * Recursively resolve a token to its final value.
- */
-function resolveValueFully(
-  raw: string,
-  keyMappings: Record<string, string>,
-  visited = new Set<string>(),
-): string | null {
-  if (visited.has(raw)) return null;
-  visited.add(raw);
-
-  let resolved: string | null = null;
-
-  // 1. Custom mapping FIRST — user's explicit override wins
-  if (keyMappings[raw]) {
-    resolved = keyMappings[raw];
-  } else {
-    const norm = normalizeKey(raw);
-    const mappingHit = Object.keys(keyMappings).find(
-      (k) => normalizeKey(k) === norm,
-    );
-    if (mappingHit) resolved = keyMappings[mappingHit];
-  }
-
-  // 2. Fall back to direct key lookup in keys.json if no custom mapping given
-  if (resolved === null) {
-    if (typedKeys[raw]) resolved = typedKeys[raw];
-    else {
-      const norm = normalizeKey(raw);
-      const hit = knownKeysList.find((k) => normalizeKey(k) === norm);
-      if (hit) resolved = typedKeys[hit];
-    }
-  }
-
-  if (resolved === null) return null;
-
-  // 3. If the resolved value is still a placeholder, resolve it recursively
-  if (resolved.startsWith("<<") && resolved.endsWith(">>")) {
-    const innerResolved = resolveValueFully(resolved, keyMappings, visited);
-    return innerResolved ?? resolved;
-  }
-
-  return resolved;
-}
-
-/** Strip outer << >> or &lt;&lt; &gt;&gt; from a value */
-function unwrapPlaceholder(val: string): string {
-  if (val.startsWith("&lt;&lt;") && val.endsWith("&gt;&gt;")) {
-    return val.slice(8, -8);
-  }
-  if (val.startsWith("<<") && val.endsWith(">>")) {
-    return val.slice(2, -2);
-  }
-  return val;
-}
-
-/**
- * Apply Pattern A/B/C/D token replacement against a plain (already-escaped) text string.
+/* ──────────────────────────────────────────────────────────────────────
+ * DocX Key Replacer — replace
  *
- * IMPORTANT FIX: `foundNormSet` contains the normalized form of every token that was
- * already discovered in proper <<TOKEN>> bracket form somewhere in the document.
- * For those tokens we ONLY ever attempt Pattern A (the bracketed match). We never
- * fall through to Patterns B/C/C2/D for them, because those are "loose" fallback
- * matchers meant for placeholders that DON'T use bracket syntax (e.g. bare
- * "(SCHOOL NAME)" style tokens). Running loose matching on a token that's already
- * properly bracketed is what caused plain label text like "Grade:" to get
- * clobbered by the "GRADE" placeholder replacement — Pattern D is case-insensitive
- * free-text matching and doesn't know "Grade" the label word is different from
- * "<<GRADE>>" the placeholder.
- */
-function applyTokenReplacements(
-  text: string,
-  allTokens: string[],
-  keyMappings: Record<string, string>,
-  isHtml: boolean,
-  foundNormSet: Set<string>,
-): string {
-  let out = text;
+ * Same request / response contract as before:
+ *   in : multipart form with `file`, `keyMappings` (JSON), and the
+ *        `foundKeys` / `unmatchedKeys` lists the UI still sends (the
+ *        engine re-analyses the file itself, so they are not needed)
+ *   out: the rewritten .docx (or .html/.htm) as an attachment
+ *
+ * Now backed by the shared esign engine (lib/esign/legacy-adapter.ts).
+ * The important difference from the old implementation: text is spliced
+ * inside the existing runs, so bold / italic / colour / size of every run
+ * in a paragraph survive a replacement. HTML files are written back in
+ * their original charset with browser-safe &lt;&lt;KEY&gt;&gt; keys.
+ * ────────────────────────────────────────────────────────────────────── */
 
-  allTokens.forEach((token) => {
-    const norm = normalizeKey(token);
-    let replaced = false;
-
-    // If this token was already found in bracket form (<<TOKEN>>) anywhere in the
-    // document, it's unambiguous — restrict it to Pattern A only. Loose matching
-    // (B/C/C2/D) is reserved for tokens that never appeared in bracket form at all.
-    const bracketedOnly = foundNormSet.has(norm);
-
-    const value = isHtml ? null : resolveValueFully(token, keyMappings);
-    if (!isHtml && !value) return;
-
-    const escaped = isHtml ? "" : escapeXml(value as string);
-    const htmlReplaceValue = `<<${norm}>>`;
-
-    // =====================
-    // Pattern A: <<...>>  (literal + XML-encoded)
-    // =====================
-    if (norm.length > 0 && !replaced) {
-      try {
-        const inner = norm.split("").map(escapeRegExp).join("[\\s]*");
-
-        const reLiteral = new RegExp(`<<\\s*${inner}\\s*>>`, "gi");
-        if (reLiteral.test(out)) {
-          out = out.replace(
-            reLiteral,
-            isHtml ? htmlReplaceValue : `<<${unwrapPlaceholder(escaped)}>>`,
-          );
-          replaced = true;
-        }
-
-        if (!replaced && !isHtml) {
-          const reEncoded = new RegExp(
-            `&lt;&lt;\\s*${inner}\\s*&gt;&gt;`,
-            "gi",
-          );
-          if (reEncoded.test(out)) {
-            out = out.replace(
-              reEncoded,
-              `&lt;&lt;${unwrapPlaceholder(escaped)}&gt;&gt;`,
-            );
-            replaced = true;
-          }
-        }
-      } catch (_) {}
-    }
-
-    // Token was already unambiguously bracketed — stop here, never fall through
-    // to loose text matching that could clobber unrelated label text.
-    if (bracketedOnly) return;
-
-    // =====================
-    // Pattern B: @token
-    // =====================
-    if (!replaced && /^[A-Za-z0-9_]+$/.test(token.replace(/^@/, ""))) {
-      try {
-        const re = new RegExp(
-          `@${escapeRegExp(token.replace(/^@/, ""))}`,
-          "gi",
-        );
-        if (re.test(out)) {
-          out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
-          replaced = true;
-        }
-      } catch (_) {}
-    }
-
-    // =====================
-    // Pattern C: ALL CAPS (e.g., CAMPUSNAME)
-    // =====================
-    if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
-      try {
-        const re = new RegExp(
-          `(?<![A-Za-z0-9_])${escapeRegExp(norm)}(?![A-Za-z0-9_])`,
-          "g",
-        );
-        if (re.test(out)) {
-          out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
-          replaced = true;
-        }
-      } catch (_) {}
-    }
-
-    // =====================
-    // Pattern C2: _TOKEN_ (underscore-wrapped, EXACT case-sensitive match)
-    // =====================
-    if (!replaced && /^[A-Z][A-Z0-9_]{3,}$/.test(norm)) {
-      try {
-        const reUnderscore = new RegExp(
-          `_\\s*${escapeRegExp(norm)}\\s*_`,
-          "g", // no "i" flag — must match the exact-case token only
-        );
-        if (reUnderscore.test(out)) {
-          out = out.replace(
-            reUnderscore,
-            isHtml ? htmlReplaceValue : `<<${unwrapPlaceholder(escaped)}>>`,
-          );
-          replaced = true;
-        }
-      } catch (_) {}
-    }
-
-    // =====================
-    // Pattern D: Free text (exact word boundary match)
-    // =====================
-    if (!replaced) {
-      const freeText = token
-        .replace(/^<</, "")
-        .replace(/>>$/, "")
-        .replace(/^@/, "")
-        .trim();
-      if (freeText.length > 0) {
-        try {
-          // allow whitespace variance between words (handles split-run spacing quirks)
-          const innerFree = freeText
-            .split(/\s+/)
-            .map((w) => w.split("").map(escapeRegExp).join("[\\s]*"))
-            .join("[\\s]+");
-          const re = new RegExp(
-            `(?<![A-Za-z0-9])${innerFree}(?![A-Za-z0-9])`,
-            "gi",
-          );
-          if (re.test(out)) {
-            out = out.replace(re, isHtml ? htmlReplaceValue : escaped);
-            replaced = true;
-          }
-        } catch (_) {}
-      }
-    }
-  });
-
-  return out;
-}
-
-/**
- * Merge all <w:t> nodes within each <w:p>...</w:p> paragraph into one logical
- * string, run token replacement against that merged string, then write the
- * result into the FIRST <w:t> node and empty out the rest. This fixes cases
- * where Word splits a single visible phrase (e.g. "(SCHOOL NAME)") across
- * multiple runs, which previously made it invisible to regex matching.
- */
-function replaceTokensInDocxXml(
-  xml: string,
-  allTokens: string[],
-  keyMappings: Record<string, string>,
-  foundNormSet: Set<string>,
-): string {
-  // Normalize self-closing <w:t/> to <w:t></w:t> so they're uniformly handled.
-  // IMPORTANT: must not match on <w:tab/>, <w:tblPr/>, <w:trPr/>, <w:tcPr/>,
-  // <w:titlePgBelow/>, etc. — anything starting with "w:t" but NOT the exact
-  // <w:t> tag. The (?![a-zA-Z]) lookahead prevents matching those substrings.
-  let normalized = xml.replace(/<w:t(?![a-zA-Z])([^>]*)\/>/g, "<w:t$1></w:t>");
-
-  normalized = normalized.replace(
-    /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g,
-    (paragraph) => {
-      const wtRegex = /<w:t(?![a-zA-Z])([^>]*)>([\s\S]*?)<\/w:t>/g;
-      const matches = Array.from(paragraph.matchAll(wtRegex));
-
-      if (matches.length === 0) return paragraph;
-
-      const fullText = matches.map((m) => m[2]).join("");
-      const newFullText = applyTokenReplacements(
-        fullText,
-        allTokens,
-        keyMappings,
-        false,
-        foundNormSet,
-      );
-
-      if (newFullText === fullText) return paragraph;
-
-      let result = "";
-      let lastIndex = 0;
-
-      matches.forEach((m, i) => {
-        const matchIndex = m.index ?? 0;
-        result += paragraph.slice(lastIndex, matchIndex);
-
-        let attrs = m[1] || "";
-        if (i === 0 && !/xml:space=/.test(attrs)) {
-          attrs = `${attrs} xml:space="preserve"`;
-        }
-
-        const content = i === 0 ? newFullText : "";
-        result += `<w:t${attrs}>${content}</w:t>`;
-
-        lastIndex = matchIndex + m[0].length;
-      });
-
-      result += paragraph.slice(lastIndex);
-      return result;
-    },
-  );
-
-  return normalized;
+function parseMappings(raw: FormDataEntryValue | null): Record<string, string> {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get("file") as File;
-    const keyMappingsStr = formData.get("keyMappings") as string;
-    const foundKeysStr = formData.get("foundKeys") as string;
-    const unmatchedKeysStr = formData.get("unmatchedKeys") as string;
-
-    const keyMappings: Record<string, string> = keyMappingsStr
-      ? JSON.parse(keyMappingsStr)
-      : {};
-    const foundKeys: string[] = foundKeysStr ? JSON.parse(foundKeysStr) : [];
-    const unmatchedKeys: string[] = unmatchedKeysStr
-      ? JSON.parse(unmatchedKeysStr)
-      : [];
+    const file = formData.get("file") as File | null;
+    const keyMappings = parseMappings(formData.get("keyMappings"));
 
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const fileName = file.name.toLowerCase();
-    const isHtmlFile = fileName.endsWith(".html") || fileName.endsWith(".htm");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const result = legacyReplace(bytes, file.name, keyMappings);
 
-    const allTokens = [
-      ...new Set([...foundKeys, ...unmatchedKeys, ...Object.keys(keyMappings)]),
-    ].sort((a, b) => b.length - a.length);
-
-    // Tokens that were already discovered in proper <<TOKEN>> bracket form get
-    // restricted to Pattern A only (see applyTokenReplacements). This is what
-    // stops a placeholder like <<GRADE>> from also matching plain label text
-    // such as "Grade:" via the loose fallback patterns.
-    const foundNormSet = new Set(foundKeys.map(normalizeKey));
-
-    if (isHtmlFile) {
-      // Handle HTML/HTM files (unchanged — HTML text isn't split across runs)
-      const htmlContent = await file.text();
-      let processedHtml = applyTokenReplacements(
-        htmlContent,
-        allTokens,
-        keyMappings,
-        true,
-        foundNormSet,
-      );
-
-      // Post-processing: Replace remaining empty <> placeholders
-      const emptyBracketPatterns = [
-        />\s*<>\s*</g,
-        />\s*<\s*>\s*</g,
-        /<\s*>\s*/g,
-      ];
-
-      let keyIndex = 0;
-      for (const pattern of emptyBracketPatterns) {
-        if (keyIndex >= allTokens.length) break;
-
-        processedHtml = processedHtml.replace(pattern, (match) => {
-          if (keyIndex < allTokens.length) {
-            const token = allTokens[keyIndex];
-            const norm = normalizeKey(token);
-            keyIndex++;
-
-            if (pattern.source.includes("><")) {
-              return `><<${norm}>><`;
-            }
-            return `<<${norm}>>`;
-          }
-          return match;
-        });
-      }
-
-      return new NextResponse(processedHtml, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${file.name}"`,
-        },
-      });
-    } else {
-      // Handle DOCX files — now with paragraph-level run merging
-      const arrayBuffer = await file.arrayBuffer();
-      const zip = new PizZip(arrayBuffer);
-
-      const xmlFiles = Object.keys(zip.files).filter((f) =>
-        f.match(/word\/(document|header\d*|footer\d*)\.xml/),
-      );
-
-      xmlFiles.forEach((xmlPath) => {
-        const xml = zip.files[xmlPath].asText();
-        const newXml = replaceTokensInDocxXml(
-          xml,
-          allTokens,
-          keyMappings,
-          foundNormSet,
-        );
-        zip.file(xmlPath, newXml);
-      });
-
-      const buffer = zip.generate({
-        type: "nodebuffer",
-        compression: "DEFLATE",
-      });
-
-      return new NextResponse(new Uint8Array(buffer), {
-        headers: {
-          "Content-Type":
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "Content-Disposition": `attachment; filename="${file.name}"`,
-        },
-      });
-    }
+    const body = new Blob([result.bytes as Uint8Array<ArrayBuffer>]);
+    return new NextResponse(body, {
+      headers: {
+        "Content-Type": result.contentType,
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(file.name)}"`,
+        "X-Replaced-Keys": encodeURIComponent(JSON.stringify(result.replaced)),
+        "X-Skipped-Keys": encodeURIComponent(JSON.stringify(result.skipped)),
+      },
+    });
   } catch (error) {
     console.error("Error processing document:", error);
     return NextResponse.json(
