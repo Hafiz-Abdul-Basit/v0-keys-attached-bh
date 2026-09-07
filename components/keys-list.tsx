@@ -1,14 +1,18 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Search } from "lucide-react"
+// Single source of truth: the root keys.json (also used by every API route).
+import keysJson from "@/keys.json"
 
 interface KeysData {
   [key: string]: string
 }
+
+const KEYS: KeysData = keysJson as KeysData
 
 interface KeysListProps {
   matchedKeys?: string[]
@@ -20,29 +24,10 @@ interface KeysListProps {
 
 export function KeysList({ matchedKeys = [], unmatchedKeys = [], onKeyUpdate }: KeysListProps,  customMappings = {},
 ) {
-  const [keys, setKeys] = useState<KeysData>({})
-  const [loading, setLoading] = useState(true)
+  const keys = KEYS
+  const loading = false
   const [searchTerm, setSearchTerm] = useState("")
   const [keyMappings, setKeyMappings] = useState<{ [key: string]: string }>({})
-
-  useEffect(() => {
-    const loadKeys = async () => {
-      try {
-        const response = await fetch("/keys.json")
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        const data = await response.json()
-        setKeys(data)
-      } catch (error) {
-        console.error("Error loading keys:", error)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadKeys()
-  }, [])
 
   const filteredKeys = Object.entries(keys).filter(
     ([key, placeholder]) =>

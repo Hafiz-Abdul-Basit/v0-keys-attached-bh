@@ -3,6 +3,7 @@ import { Toaster, toast } from "react-hot-toast";
 import { ReplacementAnimation } from "@/components/replacement-animation";
 import type React from "react";
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -17,6 +18,7 @@ import {
   AlertCircle,
   ClipboardCopy,
   RotateCcw,
+  FileCode2,
 } from "lucide-react";
 import { DocumentPreview } from "@/components/document-preview";
 import { KeysList } from "@/components/keys-list";
@@ -465,6 +467,14 @@ export default function Home() {
             </h1>
 
             <div className="flex items-center gap-2">
+              <Link
+                href="/esign-templates"
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors"
+                title="Esign Templates / Customized — HTML templates with checkboxes & textboxes"
+              >
+                <FileCode2 className="h-4 w-4" />
+                Esign Templates
+              </Link>
               <Button
                 variant="outline"
                 className="flex items-center gap-2"
