@@ -65,12 +65,19 @@ export async function POST(request: NextRequest) {
     });
 
     const body = new Blob([bytes as Uint8Array<ArrayBuffer>]);
+    // Keep the header small: per-candidate marker map is not needed by the
+    // client (it already knows the assignments); a count is enough.
+    const headerStats = {
+      keys: stats.keys,
+      skipped: stats.skipped,
+      markerCount: Object.keys(stats.markers).length,
+    };
     return new NextResponse(body, {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "Content-Disposition": `attachment; filename="${encodeURIComponent(file.name)}"`,
-        "X-Esign-Stats": encodeURIComponent(JSON.stringify(stats)),
+        "X-Esign-Stats": encodeURIComponent(JSON.stringify(headerStats)),
       },
     });
   } catch (error) {

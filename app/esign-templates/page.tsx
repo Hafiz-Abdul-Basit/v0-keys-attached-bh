@@ -317,8 +317,11 @@ export default function EsignTemplatesPage() {
       }
     }
 
-    setFiles((prev) => [...prev, ...added]);
-    if (files.length === 0 && added.length > 0) setSelectedIndex(0);
+    setFiles((prev) => {
+      // select the first newly added file when nothing was loaded before
+      if (prev.length === 0 && added.length > 0) setSelectedIndex(0);
+      return [...prev, ...added];
+    });
     setPreviewMode("original");
     setIsUploading(false);
     toast.dismiss(toastId);
@@ -368,8 +371,12 @@ export default function EsignTemplatesPage() {
   const removeFile = (index: number) => {
     const name = files[index].file.name;
     setFiles((prev) => prev.filter((_, i) => i !== index));
-    if (selectedIndex >= files.length - 1)
-      setSelectedIndex(Math.max(0, files.length - 2));
+    // keep the same document selected (or the nearest one) after removal
+    setSelectedIndex((sel) => {
+      if (index < sel) return sel - 1;
+      if (index === sel) return Math.max(0, Math.min(sel, files.length - 2));
+      return sel;
+    });
     toast(`Removed ${name}`, { icon: "🗑️", duration: 2000 });
   };
 
