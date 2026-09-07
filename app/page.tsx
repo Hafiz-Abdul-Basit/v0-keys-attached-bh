@@ -18,7 +18,6 @@ import {
   AlertCircle,
   ClipboardCopy,
   RotateCcw,
-  FileCode2,
 } from "lucide-react";
 import { DocumentPreview } from "@/components/document-preview";
 import { KeysList } from "@/components/keys-list";
@@ -452,11 +451,19 @@ export default function Home() {
         <div className="border-b bg-card p-4 flex-shrink-0">
           <div className="flex items-center justify-between">
             <h1 className="text-2xl font-bold flex items-center gap-3">
-              <span>
-                DocX Key Replacer{" "}
-                <span className="text-sm text-gray-500">
-                  ( Developed by Abdul Basit )
+              <span className="inline-flex rounded-lg border bg-muted/40 p-0.5 text-sm font-medium">
+                <span className="px-3 py-1.5 rounded-md bg-primary text-primary-foreground shadow-sm">
+                  DocX Key Replacer
                 </span>
+                <Link
+                  href="/esign-templates"
+                  className="px-3 py-1.5 rounded-md text-gray-600 hover:text-gray-900 hover:bg-white transition-colors"
+                >
+                  Esign Templates
+                </Link>
+              </span>
+              <span className="text-sm text-gray-500 font-normal">
+                ( Developed by Abdul Basit )
               </span>
               {uploadedFiles.length > 0 && (
                 <Badge variant="secondary" className="text-xs mt-3">
@@ -467,14 +474,6 @@ export default function Home() {
             </h1>
 
             <div className="flex items-center gap-2">
-              <Link
-                href="/esign-templates"
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted transition-colors"
-                title="Esign Templates / Customized — HTML templates with checkboxes & textboxes"
-              >
-                <FileCode2 className="h-4 w-4" />
-                Esign Templates
-              </Link>
               <Button
                 variant="outline"
                 className="flex items-center gap-2"
