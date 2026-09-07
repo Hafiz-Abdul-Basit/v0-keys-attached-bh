@@ -750,8 +750,10 @@ function plainRegex(form: EsignTokenForm | "text", raw: string, norm: string): R
     return new RegExp(`(?<![A-Za-z0-9_@])${escapeRegExp(norm)}(?![A-Za-z0-9_])`, "g");
   }
   if (form === "plain") {
-    const relaxed = norm.split("").map(escapeRegExp).join("[\\s_-]*");
-    return new RegExp(`(?<![A-Za-z0-9])${relaxed}(?![A-Za-z0-9])`, "gi");
+    // exact spelling of this variant; only separators are flexible
+    const letters = raw.replace(/[\s_-]+/g, "");
+    const relaxed = letters.split("").map(escapeRegExp).join("[\\s_-]*");
+    return new RegExp(`(?<![A-Za-z0-9])${relaxed}(?![A-Za-z0-9])`, "g");
   }
   const words = raw.trim().split(/\s+/).map(escapeRegExp).join("\\s+");
   return new RegExp(`(?<![A-Za-z0-9])${words}(?![A-Za-z0-9])`, "gi");

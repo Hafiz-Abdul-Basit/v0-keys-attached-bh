@@ -405,7 +405,10 @@ export function analyzeEsignText(
   const addToken = (raw: string, form: EsignTokenForm) => {
     const norm = normalizeKey(raw);
     if (!norm) return;
-    const id = `${form}:${norm}`;
+    // plain-text variants are kept apart by exact spelling, so that
+    // "STUDENT ID" (a placeholder) and "Student ID" (a label) can be
+    // included / excluded independently
+    const id = form === "plain" ? `plain:${raw}` : `${form}:${norm}`;
     const existing = tokens.get(id);
     if (existing) {
       existing.count++;
@@ -444,8 +447,15 @@ export function analyzeEsignText(
   // whole words, and never inside a <<…>> / @… token that was found above.
   const strictNorms = new Set(Array.from(tokens.values()).map((t) => t.norm));
   const consumed: [number, number][] = [];
-  for (const re of [TEXT_BRACKET_RE, TEXT_AT_RE, TEXT_BARE_RE]) {
+  for (const re of [TEXT_BRACKET_RE, TEXT_AT_RE]) {
     for (const m of text.matchAll(re)) {
+      consumed.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+    }
+  }
+  // only CAPITAL words that really are keys count as consumed — "STUDENT"
+  // in "STUDENT ID" must not hide the plain-text match "STUDENT ID"
+  for (const m of text.matchAll(TEXT_BARE_RE)) {
+    if (KEY_BY_NORM.has(m[0])) {
       consumed.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
     }
   }
@@ -754,15 +764,18 @@ const FORM_ORDER: Record<EsignTokenForm, number> = {
 };
 
 /** plain-text key inside HTML: tags / whitespace / _ allowed between letters */
-export function plainHtmlRegex(norm: string): RegExp {
-  const loose = norm.split("").map(escapeRegExp).join("(?:<[^>]*>|&nbsp;|&#160;|[\\s_-])*");
-  return new RegExp(`(?<![A-Za-z0-9])${loose}(?![A-Za-z0-9])`, "gi");
+export function plainHtmlRegex(raw: string): RegExp {
+  // exact spelling of this variant ("Student ID" ≠ "STUDENT ID"); only the
+  // separators between letters are flexible
+  const letters = raw.replace(/[\s_-]+/g, "");
+  const loose = letters.split("").map(escapeRegExp).join("(?:<[^>]*>|&nbsp;|&#160;|[\\s_-])*");
+  return new RegExp(`(?<![A-Za-z0-9])${loose}(?![A-Za-z0-9])`, "g");
 }
 
-function regexForToken(form: EsignTokenForm, norm: string): RegExp {
+function regexForToken(form: EsignTokenForm, norm: string, raw: string): RegExp {
   if (form === "bracket") return bracketRegex(norm);
   if (form === "at") return atRegex(norm);
-  if (form === "plain") return plainHtmlRegex(norm);
+  if (form === "plain") return plainHtmlRegex(raw);
   return bareRegex(norm);
 }
 
@@ -843,7 +856,7 @@ function collectKeyTargets(
     fromMapping: t.fromMapping,
     regex: t.fromMapping
       ? regexForMappingKey(t.raw)
-      : regexForToken(t.form as EsignTokenForm, t.norm),
+      : regexForToken(t.form as EsignTokenForm, t.norm, t.raw),
   }));
 }
 
