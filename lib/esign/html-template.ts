@@ -942,7 +942,7 @@ export const ESIGN_HIGHLIGHT_CSS = `
   mark.es-key-yellow { background:#fef08a; color:#713f12; border-bottom:2px solid #eab308; }
   mark.es-key-blue   { background:#dbeafe; color:#1e3a8a; border-bottom:2px solid #3b82f6; }
   mark.es-key-plain  { background:#ffedd5; color:#7c2d12; border-bottom:2px solid #f97316; }
-  mark.es-key-excluded { background:#f3f4f6; color:#6b7280; border-bottom:2px dashed #9ca3af; text-decoration:line-through; }
+  mark.es-key-excluded { background:#fff7ed; color:#9a3412; border-bottom:2px dashed #fdba74; font-weight:500; }
   mark.es-ctrl-checkbox { background:#e0f2fe; color:#0c4a6e; border:1px solid #0ea5e9; }
   mark.es-ctrl-textbox  { background:#ede9fe; color:#4c1d95; border:1px solid #8b5cf6; }
   mark[class^="es-"] { border-radius:3px; padding:0 3px; font-weight:600; font-family:Consolas,monospace; font-size:0.9em; white-space:nowrap; }

@@ -29,6 +29,7 @@ import {
   Wand2,
   Ban,
   Map as MapIcon,
+  Search,
 } from "lucide-react";
 import { PlaceholderAutocomplete } from "@/components/Placeholderautocomplete";
 import { KeysList } from "@/components/keys-list";
@@ -71,6 +72,8 @@ interface EsignFile {
   replacedHtml?: string;
   replacedBytes?: Uint8Array;
   mappedDocxBytes?: Uint8Array;
+  /** docx only: the mapped .docx rendered to HTML, markers still as <c1>/<t1> text */
+  mappedHtml?: string;
   replacedAnalysis?: EsignAnalysis;
   stats?: EsignReplaceStats;
   /** Step 2 (docx only): the mapped .docx saved by Word as .htm and
@@ -164,11 +167,14 @@ export default function EsignTemplatesPage() {
   const [mappings, setMappings] = useState<Record<string, string>>({});
   /** raw tokens (mostly plain-text matches like "Student Name") the user
    *  decided to leave alone */
-  const [excluded, setExcluded] = useState<string[]>([]);
+  /** plain-text key matches ("Student Name", "studentname") the user ticked
+   *  to replace — OFF by default: only exact matches (<<KEY>>, @KEY, KEY)
+   *  are replaced automatically, like the DocX Key Replacer */
+  const [includedPlain, setIncludedPlain] = useState<string[]>([]);
   const [customText, setCustomText] = useState("");
   const [customValue, setCustomValue] = useState("");
   const [panelTab, setPanelTab] = useState<PanelTab>("controls");
-  const [previewMode, setPreviewMode] = useState<"original" | "replaced">(
+  const [previewMode, setPreviewMode] = useState<"original" | "mapped" | "replaced">(
     "original",
   );
   const [showHighlights, setShowHighlights] = useState(true);
@@ -209,7 +215,20 @@ export default function EsignTemplatesPage() {
 
   /* ── derived ── */
   const current = files[selectedIndex];
-  const uniqueMatched = [...new Set(files.flatMap((f) => f.analysis.matchedKeys))];
+  // "matched" = keys that WILL be replaced: exact forms (<<KEY>>, @KEY, KEY)
+  // plus the plain-text suggestions the user ticked
+  const uniqueMatched = [
+    ...new Set(
+      files.flatMap((f) =>
+        f.analysis.tokens
+          .filter(
+            (t) =>
+              t.knownKey && (t.form !== "plain" || includedPlain.includes(t.raw)),
+          )
+          .map((t) => t.knownKey as string),
+      ),
+    ),
+  ];
   const uniqueUnmatched = [
     ...new Set(files.flatMap((f) => f.analysis.unmatchedKeys)),
   ];
@@ -227,6 +246,10 @@ export default function EsignTemplatesPage() {
     );
     return Array.from(seen.values());
   })();
+  /** everything plain-text that is NOT ticked stays untouched */
+  const excluded = plainTokens
+    .filter((t) => !includedPlain.includes(t.raw))
+    .map((t) => t.raw);
   const customEntries = Object.entries(mappings).filter(
     ([k, v]) => !uniqueUnmatched.includes(k) && v,
   );
@@ -386,7 +409,7 @@ export default function EsignTemplatesPage() {
     setFiles([]);
     setSelectedIndex(0);
     setMappings({});
-    setExcluded([]);
+    setIncludedPlain([]);
     setCustomText("");
     setCustomValue("");
     setPreviewMode("original");
@@ -602,6 +625,7 @@ export default function EsignTemplatesPage() {
         replacedHtml: word.replacedHtml,
         replacedBytes: word.replacedBytes,
         mappedDocxBytes,
+        mappedHtml: html,
         htmlSource: "word" as const,
         stats: {
           keys: stats.keys,
@@ -615,6 +639,7 @@ export default function EsignTemplatesPage() {
       replacedHtml,
       replacedBytes: new TextEncoder().encode(replacedHtml),
       mappedDocxBytes,
+      mappedHtml: html,
       htmlSource: "docx-preview" as const,
       stats,
     };
@@ -652,7 +677,9 @@ export default function EsignTemplatesPage() {
         };
       }
       setFiles(updated);
-      setPreviewMode("replaced");
+      // Word files: show the mapped tags first (which checkbox/textbox got
+      // which <c1>/<t1>), the built HTML is one click away
+      setPreviewMode(updated[selectedIndex]?.mappedHtml ? "mapped" : "replaced");
       toast.dismiss(toastId);
 
       const keyHits = updated.reduce(
@@ -726,11 +753,16 @@ export default function EsignTemplatesPage() {
     }
   };
 
+  /** which HTML the preview shows for the current mode */
+  const pickPreviewHtml = (): string | undefined => {
+    if (!current) return undefined;
+    if (previewMode === "replaced" && current.replacedHtml !== undefined) return current.replacedHtml;
+    if (previewMode === "mapped" && current.mappedHtml !== undefined) return current.mappedHtml;
+    return current.html;
+  };
+
   const handleCopyHtml = async () => {
-    const html =
-      previewMode === "replaced" && current?.replacedHtml !== undefined
-        ? current.replacedHtml
-        : current?.html;
+    const html = pickPreviewHtml();
     if (!html) return;
     try {
       await navigator.clipboard.writeText(html);
@@ -740,10 +772,7 @@ export default function EsignTemplatesPage() {
     }
   };
 
-  const previewHtml =
-    previewMode === "replaced" && current?.replacedHtml !== undefined
-      ? current.replacedHtml
-      : current?.html;
+  const previewHtml = pickPreviewHtml();
 
   /* ───────────────────────────── render ───────────────────────────── */
   return (
@@ -883,11 +912,13 @@ export default function EsignTemplatesPage() {
                       <span className="text-sm font-normal text-muted-foreground truncate max-w-xs">
                         ({current.file.name}
                         {current.kind === "html" ? ` · ${current.charset}` : " · Word"}
-                        {previewMode === "replaced" && current.htmlSource === "word"
-                          ? " · Word HTML"
-                          : previewMode === "replaced" && current.htmlSource === "docx-preview"
-                            ? " · docx-preview HTML"
-                            : ""}
+                        {previewMode === "mapped"
+                          ? " · mapped tags"
+                          : previewMode === "replaced" && current.htmlSource === "word"
+                            ? " · Word HTML"
+                            : previewMode === "replaced" && current.htmlSource === "docx-preview"
+                              ? " · docx-preview HTML"
+                              : ""}
                         )
                       </span>
                     )}
@@ -901,6 +932,18 @@ export default function EsignTemplatesPage() {
                         >
                           Original
                         </Button>
+                        {current.kind === "docx" && (
+                          <Button
+                            size="sm"
+                            variant={previewMode === "mapped" ? "default" : "outline"}
+                            className="h-7 text-xs"
+                            disabled={current.mappedHtml === undefined}
+                            onClick={() => setPreviewMode("mapped")}
+                            title="The mapped Word file: every checkbox/textbox shown as its <c1>/<t1> tag"
+                          >
+                            Mapped tags
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant={previewMode === "replaced" ? "default" : "outline"}
@@ -939,13 +982,13 @@ export default function EsignTemplatesPage() {
                       <LegendSwatch bg="#dbeafe" border="#3b82f6" label="Mapped key" />
                       <LegendSwatch bg="#fef08a" border="#eab308" label="Not in key list" />
                       <LegendSwatch bg="#ffedd5" border="#f97316" label="Plain-text key" />
-                      <LegendSwatch bg="#f3f4f6" border="#9ca3af" label="Skipped" />
+                      <LegendSwatch bg="#fff7ed" border="#fdba74" label="Suggested (not replaced)" />
                       <LegendSwatch bg="#e0f2fe" border="#0ea5e9" label="Checkbox" />
                       <LegendSwatch bg="#ede9fe" border="#8b5cf6" label="Textbox" />
                     </div>
                   )}
                   {/* build result — shown right after Build, on the built preview */}
-                  {current?.stats && previewMode === "replaced" && !isProcessing && (
+                  {current?.stats && previewMode !== "original" && !isProcessing && (
                     <div className="mt-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900 flex items-center gap-3 flex-wrap">
                       <CheckCircle2 className="h-4 w-4 text-green-600 flex-shrink-0" />
                       <span className="font-medium">Built.</span>
@@ -1186,38 +1229,37 @@ export default function EsignTemplatesPage() {
                         <div className="space-y-2">
                           <div>
                             <h4 className="font-medium text-sm">
-                              Key names written as normal text ({plainTokens.length})
+                              Suggested — key names written as normal text ({plainTokens.length})
                             </h4>
                             <p className="text-xs text-gray-500">
-                              Key names found without brackets (e.g.{" "}
-                              <span className="font-mono">studentname</span>,{" "}
-                              <span className="font-mono">Student Name</span>). Untick
-                              any that is really a label and must stay as it is.
+                              Not replaced automatically (only exact matches are). Tick the
+                              ones that are placeholders, e.g.{" "}
+                              <span className="font-mono">studentname</span> or{" "}
+                              <span className="font-mono">Student Name</span>; leave labels
+                              unticked.
                             </p>
                           </div>
                           <div className="grid gap-1.5">
                             {plainTokens.map((t) => {
-                              const on = !excluded.includes(t.raw);
+                              const on = includedPlain.includes(t.raw);
                               return (
                                 <label
                                   key={t.raw}
-                                  className={`flex items-center gap-2 p-2 rounded-lg border text-sm cursor-pointer ${on ? "bg-orange-50 border-orange-200" : "bg-gray-50 border-gray-200 text-gray-500"}`}
+                                  className={`flex items-center gap-2 p-2 rounded-lg border text-sm cursor-pointer ${on ? "bg-orange-50 border-orange-200" : "bg-white border-gray-200 text-gray-600"}`}
                                 >
                                   <input
                                     type="checkbox"
                                     checked={on}
                                     onChange={(e) =>
-                                      setExcluded((prev) =>
+                                      setIncludedPlain((prev) =>
                                         e.target.checked
-                                          ? prev.filter((x) => x !== t.raw)
-                                          : [...prev, t.raw],
+                                          ? [...prev, t.raw]
+                                          : prev.filter((x) => x !== t.raw),
                                       )
                                     }
                                     className="h-4 w-4"
                                   />
-                                  <span className={`font-mono ${on ? "" : "line-through"}`}>
-                                    {t.raw}
-                                  </span>
+                                  <span className="font-mono">{t.raw}</span>
                                   <span className="text-xs text-gray-500">×{t.count}</span>
                                   <span className="ml-auto font-mono text-xs text-green-800">
                                     → &lt;&lt;{t.knownKey}&gt;&gt;
@@ -1519,11 +1561,41 @@ function ControlsPanel({
     missingNumbers.checkbox.length > 0 ||
     missingNumbers.textbox.length > 0;
 
+  // search across label, context text, kind, chosen type and marker id
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+  const visible = candidates.filter((c) => {
+    if (!q) return true;
+    const type = types[c.id] ?? c.suggested ?? "ignore";
+    const marker = type === "ignore" ? "" : `${assignments[c.id].id}${type === "checkboxChecked" ? "c" : ""}`;
+    return [c.label, c.context, c.kind, TYPE_LABELS[type], marker, c.text ?? ""]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+
   return (
     <div className="space-y-5">
       <p className="text-xs text-gray-500 truncate" title={file.file.name}>
         <span className="font-mono">{file.file.name}</span>
       </p>
+
+      {file.kind === "docx" && candidates.length > 0 && (
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search controls… (e.g. lunch, c3, textbox, picture)"
+            className="pl-9 h-9 text-sm"
+          />
+          {q && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
+              {visible.length}/{candidates.length}
+            </span>
+          )}
+        </div>
+      )}
 
       {file.kind === "docx" && (
         <div className="space-y-3">
@@ -1570,7 +1642,11 @@ function ControlsPanel({
             </p>
           ) : (
             <div className="grid gap-2">
-              {candidates.map((c, idx) => {
+              {visible.length === 0 && (
+                <p className="text-xs text-muted-foreground">No control matches “{search}”.</p>
+              )}
+              {visible.map((c) => {
+                const idx = candidates.indexOf(c);
                 const type = types[c.id] ?? c.suggested ?? "ignore";
                 const marker =
                   type === "ignore"
