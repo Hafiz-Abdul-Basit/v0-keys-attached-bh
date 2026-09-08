@@ -913,4 +913,132 @@ export function buildEsignDocx(
   return { bytes, stats };
 }
 
+/* ─────────────────── manual tags: insert after some text ─────────────────── */
+
+export interface TagInsert {
+  /** text to look for (case-insensitive, whitespace-tolerant) */
+  afterText: string;
+  type: "checkbox" | "checkboxChecked" | "textbox";
+  /** insert after every occurrence instead of only the first */
+  all?: boolean;
+}
+
+export interface TagInsertResult {
+  bytes: Uint8Array;
+  /** how many tags were written, per insert (same order as the input) */
+  inserted: number[];
+}
+
+const TAG_TEXT: Record<TagInsert["type"], string> = {
+  checkbox: "<c>",
+  checkboxChecked: "<cc>",
+  textbox: "<t>",
+};
+
+/** Insert `text` into the run that contains character position `pos`. */
+function insertAt(segments: Segment[], pos: number, text: string): boolean {
+  let offset = 0;
+  for (const seg of segments) {
+    const segEnd = offset + seg.text.length;
+    if (pos >= offset && pos <= segEnd) {
+      const local = pos - offset;
+      seg.text = seg.text.slice(0, local) + text + seg.text.slice(local);
+      seg.changed = true;
+      return true;
+    }
+    offset = segEnd;
+  }
+  return false;
+}
+
+function rebuildParagraph(paragraph: string, segments: Segment[]): string {
+  let out = "";
+  let last = 0;
+  for (const seg of segments) {
+    out += paragraph.slice(last, seg.index);
+    if (seg.changed) {
+      let attrs = seg.attrs;
+      if (!/xml:space=/.test(attrs)) attrs += ' xml:space="preserve"';
+      out += `<w:t${attrs}>${escapeXml(seg.text)}</w:t>`;
+    } else {
+      out += paragraph.slice(seg.index, seg.index + seg.length);
+    }
+    last = seg.index + seg.length;
+  }
+  return out + paragraph.slice(last);
+}
+
+/**
+ * Write unnumbered tags (<c>, <cc>, <t>) right after a piece of text the
+ * user names, inside the run that holds that text — so the tag picks up
+ * the surrounding formatting and nothing else in the document moves.
+ * The result is a normal .docx that analyzeEsignDocx() then treats like
+ * any file with typed tags (numbered on build, in document order).
+ */
+export function insertTypedTags(
+  input: ArrayBuffer | Uint8Array,
+  inserts: TagInsert[],
+): TagInsertResult {
+  const zip = new PizZip(input instanceof Uint8Array ? input : new Uint8Array(input));
+  const inserted = inserts.map(() => 0);
+
+  const rules = inserts.map((ins, i) => {
+    const words = ins.afterText.trim().split(/\s+/).filter(Boolean).map(escapeRegExp);
+    return {
+      i,
+      regex: words.length ? new RegExp(words.join("\\s+"), "gi") : null,
+      text: " " + TAG_TEXT[ins.type],
+      all: ins.all === true,
+    };
+  });
+
+  for (const part of listDocxParts(zip)) {
+    const xml = zip.file(part)?.asText();
+    if (!xml) continue;
+    let changed = false;
+
+    const out = xml.replace(PARAGRAPH_RE, (paragraph) => {
+      const segments: Segment[] = [];
+      for (const m of paragraph.matchAll(WT_RE)) {
+        segments.push({
+          index: m.index ?? 0,
+          length: m[0].length,
+          attrs: m[1] ?? "",
+          text: decodeEntities(m[2] ?? ""),
+          changed: false,
+        });
+      }
+      if (!segments.length) return paragraph;
+
+      let touched = false;
+      for (const rule of rules) {
+        if (!rule.regex) continue;
+        if (!rule.all && inserted[rule.i] > 0) continue;
+        let from = 0;
+        for (;;) {
+          const merged = segments.map((s) => s.text).join("");
+          rule.regex.lastIndex = from;
+          const m = rule.regex.exec(merged);
+          if (!m) break;
+          const at = m.index + m[0].length;
+          if (insertAt(segments, at, rule.text)) {
+            inserted[rule.i]++;
+            touched = true;
+          }
+          if (!rule.all) break;
+          from = at + rule.text.length;
+        }
+      }
+      if (!touched) return paragraph;
+      changed = true;
+      return rebuildParagraph(paragraph, segments);
+    });
+
+    if (changed) zip.file(part, out);
+  }
+
+  const bytes = zip.generate({ type: "uint8array", compression: "DEFLATE" }) as Uint8Array;
+  return { bytes, inserted };
+}
+
 export { normalizeKey };

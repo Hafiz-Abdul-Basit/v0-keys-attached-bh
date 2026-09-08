@@ -75,6 +75,8 @@ interface EsignFile {
   mappedDocxBytes?: Uint8Array;
   /** docx only: the mapped .docx rendered to HTML, markers still as <c1>/<t1> text */
   mappedHtml?: string;
+  /** docx only: earlier versions of the file, for undoing "Add a tag" */
+  previousFiles?: File[];
   replacedAnalysis?: EsignAnalysis;
   stats?: EsignReplaceStats;
   /** Step 2 (docx only): the mapped .docx saved by Word as .htm and
@@ -108,11 +110,12 @@ const DEFAULT_SETTINGS: EsignSettings = {
   keyOutput: "encoded",
   replaceKeys: true,
   replaceControls: true,
-  renumber: false,
+  // number every tag top-to-bottom by default: c1, c2 … / t1, t2 …
+  renumber: true,
   templates: { ...DEFAULT_TEMPLATES },
 };
 
-const SETTINGS_STORAGE_KEY = "esign-template-settings-v2";
+const SETTINGS_STORAGE_KEY = "esign-template-settings-v3";
 
 function kindOf(f: File): FileKind | null {
   const n = f.name.toLowerCase();
@@ -471,6 +474,90 @@ export default function EsignTemplatesPage() {
     });
   };
 
+  /* ── Add a tag yourself: write <c>/<cc>/<t> after some text in the docx ── */
+  const reloadDocx = async (index: number, newFile: File, keepHistoryOf?: File) => {
+    const fd = new FormData();
+    fd.append("file", newFile);
+    const res = await fetch("/api/esign/docx/analyze", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`analyze failed (${res.status})`);
+    const analysis = (await res.json()) as DocxAnalysis;
+    const html = await convertDocxToHtml(newFile, newFile.name);
+    setFiles((prev) =>
+      prev.map((f, i) =>
+        i === index
+          ? {
+              ...f,
+              file: newFile,
+              html,
+              analysis,
+              candidates: analysis.candidates,
+              types: defaultTypes(analysis.candidates),
+              previousFiles: keepHistoryOf
+                ? [...(f.previousFiles ?? []), keepHistoryOf]
+                : (f.previousFiles ?? []).slice(0, -1),
+              // outputs are stale now
+              replacedHtml: undefined,
+              replacedBytes: undefined,
+              mappedDocxBytes: undefined,
+              mappedHtml: undefined,
+              replacedAnalysis: undefined,
+              stats: undefined,
+              htmlSource: undefined,
+            }
+          : f,
+      ),
+    );
+    setPreviewMode("original");
+  };
+
+  const handleInsertTag = async (
+    afterText: string,
+    type: "checkbox" | "checkboxChecked" | "textbox",
+    all: boolean,
+  ) => {
+    if (!current || current.kind !== "docx") return;
+    const index = selectedIndex;
+    const toastId = toast.loading(`Adding tag after “${afterText}”…`);
+    try {
+      const fd = new FormData();
+      fd.append("file", current.file);
+      fd.append("inserts", JSON.stringify([{ afterText, type, all }]));
+      const res = await fetch("/api/esign/docx/insert", { method: "POST", body: fd });
+      if (!res.ok) throw new Error(`insert failed (${res.status})`);
+      const count = (JSON.parse(res.headers.get("X-Esign-Inserted") ?? "[0]") as number[])[0] ?? 0;
+      if (!count) {
+        toast.dismiss(toastId);
+        toast.error(`“${afterText}” was not found in the document text`);
+        return;
+      }
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const newFile = new File([bytes], current.file.name, { type: current.file.type });
+      await reloadDocx(index, newFile, current.file);
+      toast.dismiss(toastId);
+      toast.success(`${count} tag${count > 1 ? "s" : ""} added after “${afterText}” — see the Controls list`);
+    } catch (err) {
+      console.error(err);
+      toast.dismiss(toastId);
+      toast.error("Could not add the tag");
+    }
+  };
+
+  const handleUndoInsert = async () => {
+    if (!current?.previousFiles?.length) return;
+    const index = selectedIndex;
+    const previous = current.previousFiles[current.previousFiles.length - 1];
+    const toastId = toast.loading("Undoing…");
+    try {
+      await reloadDocx(index, previous);
+      toast.dismiss(toastId);
+      toast("Last added tag removed", { icon: "↩️", duration: 2000 });
+    } catch (err) {
+      console.error(err);
+      toast.dismiss(toastId);
+      toast.error("Could not undo");
+    }
+  };
+
   /* ── Step 2: Word-saved .htm linked to a docx ── */
   const analyzeHtmlFile = async (file: File): Promise<LinkedHtml> => {
     const bytes = await file.arrayBuffer();
@@ -823,6 +910,20 @@ export default function EsignTemplatesPage() {
               >
                 <RotateCcw className="h-4 w-4" />
                 Reset
+              </Button>
+              <Button
+                variant={panelTab === "keys" ? "default" : "outline"}
+                className="flex items-center gap-2"
+                disabled={!files.length}
+                onClick={() => setPanelTab("keys")}
+              >
+                <MapIcon className="h-4 w-4" />
+                Manage Mappings
+                {uniqueUnmatched.length - mappedCount > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {uniqueUnmatched.length - mappedCount}
+                  </Badge>
+                )}
               </Button>
               <Button
                 variant={panelTab === "settings" ? "default" : "outline"}
@@ -1403,6 +1504,9 @@ export default function EsignTemplatesPage() {
                           onBulk={(mode) => setAllCandidateTypes(selectedIndex, mode)}
                           renumber={settings.renumber}
                           onRenumberChange={(v) => setSettings((s) => ({ ...s, renumber: v }))}
+                          onInsertTag={handleInsertTag}
+                          onUndoInsert={handleUndoInsert}
+                          canUndo={!!current.previousFiles?.length}
                         />
                       )}
                     </>
@@ -1554,14 +1658,37 @@ function ControlsPanel({
   onBulk,
   renumber,
   onRenumberChange,
+  onInsertTag,
+  onUndoInsert,
+  canUndo,
 }: {
   file: EsignFile;
   onTypeChange: (id: string, type: CandidateType) => void;
   onBulk: (mode: "suggested" | "ignore") => void;
   renumber: boolean;
   onRenumberChange: (v: boolean) => void;
+  onInsertTag: (
+    afterText: string,
+    type: "checkbox" | "checkboxChecked" | "textbox",
+    all: boolean,
+  ) => Promise<void>;
+  onUndoInsert: () => Promise<void>;
+  canUndo: boolean;
 }) {
   const { analysis, candidates, types, stats } = file;
+  // "Add a tag" form
+  const [tagText, setTagText] = useState("");
+  const [tagType, setTagType] = useState<"checkbox" | "checkboxChecked" | "textbox">("checkbox");
+  const [tagAll, setTagAll] = useState(false);
+  const [tagBusy, setTagBusy] = useState(false);
+  const docText = file.html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ");
+  const tagHits = tagText.trim()
+    ? (docText.match(new RegExp(tagText.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi")) ?? []).length
+    : 0;
   const assignments = assignControlIds(candidates, types, analysis, { renumber });
   const typedCount = candidates.filter((c) => c.kind === "marker").length;
   const undecided = candidates.filter(
@@ -1669,6 +1796,95 @@ function ControlsPanel({
               </span>
             </span>
           </label>
+
+          {/* add a tag from here, without opening Word */}
+          <div className="p-3 rounded-lg border border-violet-200 bg-violet-50 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="font-medium text-sm flex items-center gap-2">
+                <Plus className="h-4 w-4 text-violet-700" />
+                Add a tag yourself
+              </h4>
+              {canUndo && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  disabled={tagBusy}
+                  onClick={() => {
+                    setTagBusy(true);
+                    onUndoInsert().finally(() => setTagBusy(false));
+                  }}
+                >
+                  Undo last added tag
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-gray-600">
+              Type a piece of text that is in the document; the tag is written right
+              after it, in the same formatting. It then shows up in the list above and
+              gets its number in document order.
+            </p>
+            <div className="flex gap-2 items-center">
+              <Input
+                value={tagText}
+                onChange={(e) => setTagText(e.target.value)}
+                placeholder="e.g. Signature:  or  I agree to the terms"
+                className="h-8 text-sm bg-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && tagText.trim() && tagHits > 0 && !tagBusy) {
+                    setTagBusy(true);
+                    onInsertTag(tagText.trim(), tagType, tagAll)
+                      .then(() => setTagText(""))
+                      .finally(() => setTagBusy(false));
+                  }
+                }}
+              />
+              <select
+                value={tagType}
+                onChange={(e) => setTagType(e.target.value as typeof tagType)}
+                className="h-8 text-xs border rounded-md px-2 bg-white"
+              >
+                <option value="checkbox">Checkbox</option>
+                <option value="checkboxChecked">Checked checkbox</option>
+                <option value="textbox">Textbox</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs text-gray-600">
+                {tagText.trim()
+                  ? tagHits === 0
+                    ? "not found in the document text"
+                    : tagHits === 1
+                      ? "found once"
+                      : `found ${tagHits} times — first one is used`
+                  : " "}
+                {tagHits > 1 && (
+                  <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tagAll}
+                      onChange={(e) => setTagAll(e.target.checked)}
+                      className="h-3.5 w-3.5"
+                    />
+                    add after every one
+                  </label>
+                )}
+              </span>
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                disabled={!tagText.trim() || tagHits === 0 || tagBusy}
+                onClick={() => {
+                  setTagBusy(true);
+                  onInsertTag(tagText.trim(), tagType, tagAll)
+                    .then(() => setTagText(""))
+                    .finally(() => setTagBusy(false));
+                }}
+              >
+                {tagBusy ? "Adding…" : "Add tag after this text"}
+              </Button>
+            </div>
+          </div>
 
           {candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">
