@@ -139,4 +139,36 @@ buildDocx("Esign_Complex_NoBrackets.docx", [
   footer: para(run("Student Name · student id · Page 1"), '<w:pPr><w:jc w:val="center"/></w:pPr>'),
 });
 
+/* ═══════════ 4. LINES — every way people draw a line to write on ═══════════ */
+const UL = '<w:rPr><w:u w:val="single"/></w:rPr>';
+const lineShape = (cx) =>
+  `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="0"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="77" name="Straight Connector 77"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:cNvCnPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="0"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="9525"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></wps:spPr><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+const tabLeaderPara = (label) =>
+  `<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="underscore" w:pos="8640"/></w:tabs></w:pPr>${run(label)}<w:r><w:tab/></w:r></w:p>`;
+const borderedEmptyPara = () =>
+  `<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr><w:ind w:right="4320"/></w:pPr></w:p>`;
+
+buildDocx("Esign_Lines_Test.docx", [
+  heading("LINES TEST — every line should become a textbox"),
+  para(run("Student: Student Name    Campus: Campus Name")),
+  spacer(),
+  para(run("1. Underscores typed:  ", B) + run("Name: ______________________")),
+  spacer(),
+  para(run("2. Underlined spaces (Ctrl+U on blanks):  ", B) + run("Phone: ") + run("                    ", UL) + run("  Email: ") + run("                        ", UL)),
+  spacer(),
+  para(run("3. Tab with underscore leader:", B)),
+  tabLeaderPara("Address:"),
+  tabLeaderPara("City / ZIP:"),
+  spacer(),
+  para(run("4. Empty paragraph with a bottom border (signature line):", B)),
+  borderedEmptyPara(),
+  para(run("Parent signature")),
+  spacer(),
+  para(run("5. Drawn line shape (Insert → Shapes → Line):  ", B) + run("Date: ") + lineShape(Math.round(2.5 * IN))),
+  spacer(),
+  para(run("6. Underlined words are NOT a line:  ", B) + run("this text is underlined", UL) + run(" and must stay as it is.")),
+  spacer(),
+  para(run("Checkbox for contrast: ") + ccCheckbox(false) + run(" I agree")),
+].join(""));
+
 console.log("done");

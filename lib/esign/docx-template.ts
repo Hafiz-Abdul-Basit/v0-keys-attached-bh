@@ -568,6 +568,21 @@ function detectGraphics(
       continue;
     }
 
+    // a drawn line (Insert → Shapes → Line, or VML <v:line>) is a blank to
+    // write on → textbox
+    const isLine =
+      /prst="(?:line|straightConnector1|bentConnector\d)"/.test(el) ||
+      /<v:line\b/.test(el) ||
+      (heightIn !== undefined && heightIn <= 0.05 && (widthIn ?? 0) >= 0.3);
+    if (isLine) {
+      spans.push({
+        start, end, kind: "shape", suggested: "textbox",
+        label: `Line shape${size}${descr ? ` — ${descr}` : ""}`,
+        widthIn, heightIn, text: descr, strong: true, replace,
+      });
+      continue;
+    }
+
     // drawn shape without text (rectangle etc.)
     let suggested: CandidateType | null = null;
     if (widthIn !== undefined && heightIn !== undefined && heightIn > 0) {
@@ -681,6 +696,99 @@ function contextFor(xml: string, span: Span): string {
   return "▮";
 }
 
+/**
+ * "Lines" people draw to write on — all of them are textboxes:
+ *   • underlined spaces / tabs  ("Name: ______" made with Ctrl+U)
+ *   • tab stops with an underscore / dot leader
+ *   • an empty paragraph with a bottom border (signature line)
+ * (drawn line shapes are handled in detectGraphics, "____" in
+ * detectRunCharacters)
+ */
+function detectLines(xml: string): Span[] {
+  const spans: Span[] = [];
+
+  // 1. underlined blank runs — merge neighbours, Word splits them freely
+  const underlined: Span[] = [];
+  for (const run of xml.matchAll(RUN_RE)) {
+    const runXml = run[0];
+    const runStart = run.index ?? 0;
+    const rPr = runXml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? "";
+    if (!/<w:u\b(?![^>]*w:val="none")/.test(rPr)) continue;
+    const body = runXml.replace(/<w:rPr>[\s\S]*?<\/w:rPr>/, "");
+    const onlyBlankParts = body
+      .replace(/<w:t\b[^>]*>[^<]*<\/w:t>|<w:t\b[^>]*\/>|<w:tab\/>/g, "")
+      .replace(/^<w:r\b[^>]*>|<\/w:r>$/g, "")
+      .trim() === "";
+    if (!onlyBlankParts) continue;
+    const text = paragraphText(body);
+    const hasTab = /<w:tab\/>/.test(body);
+    if (!/^[\s _]*$/.test(text)) continue;
+    if (!hasTab && text.replace(/_/g, "").length < 2) continue; // a single underlined space is nothing
+    underlined.push({
+      start: runStart,
+      end: runStart + runXml.length,
+      kind: "blank",
+      suggested: "textbox",
+      label: hasTab ? "Underlined tab (line)" : `Underlined blank (${text.length} spaces)`,
+      text: hasTab ? "underlined tab" : "underlined spaces",
+      strong: true,
+      replace: (markerXml) => markerRun(rPr, markerXml),
+    });
+  }
+  underlined.sort((a, b) => a.start - b.start);
+  for (const s of underlined) {
+    const last = spans[spans.length - 1];
+    if (last && last.kind === "blank" && last.end === s.start && /Underlined/.test(last.label)) {
+      last.end = s.end; // one visual line made of several runs
+      last.label = "Underlined blank (line)";
+    } else {
+      spans.push(s);
+    }
+  }
+
+  // 2. + 3. per paragraph: tab leaders and bordered empty paragraphs
+  for (const pm of xml.matchAll(PARAGRAPH_RE)) {
+    const pXml = pm[0];
+    const pStart = pm.index ?? 0;
+    const pPr = pXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? "";
+    const body = pXml.slice(pPr ? pXml.indexOf(pPr) + pPr.length : 0);
+    const bodyStart = pStart + (pPr ? pXml.indexOf(pPr) + pPr.length : 0);
+
+    if (/<w:tab\b[^>]*w:leader="(?:underscore|dot|hyphen|heavy|middleDot)"/.test(pPr)) {
+      for (const t of body.matchAll(/<w:tab\/>/g)) {
+        const start = bodyStart + (t.index ?? 0);
+        spans.push({
+          start,
+          end: start + t[0].length,
+          kind: "blank",
+          suggested: "textbox",
+          label: "Tab leader line",
+          text: "tab leader",
+          strong: false, // an underlined run around it wins
+          replace: (markerXml) => `<w:t xml:space="preserve">${markerXml}</w:t><w:tab/>`,
+        });
+      }
+    }
+
+    const bordered = /<w:pBdr>[\s\S]*?<w:bottom\b(?![^>]*w:val="(?:none|nil)")[\s\S]*?<\/w:pBdr>/.test(pPr);
+    if (bordered && paragraphText(body).trim() === "" && !/<w:(?:drawing|pict|sdt|fldChar)\b/.test(body)) {
+      const at = pStart + pXml.lastIndexOf("</w:p>");
+      spans.push({
+        start: at,
+        end: at,
+        kind: "blank",
+        suggested: "textbox",
+        label: "Line under empty paragraph (border)",
+        text: "bottom border",
+        strong: true,
+        replace: (markerXml) => markerRun("", markerXml),
+      });
+    }
+  }
+
+  return spans;
+}
+
 function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
   const rels = relsFor(zip, part);
   return resolveOverlaps([
@@ -688,6 +796,7 @@ function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
     ...detectLegacyFields(xml),
     ...detectRunCharacters(xml),
     ...detectGraphics(xml, zip, rels),
+    ...detectLines(xml),
   ]);
 }
 
