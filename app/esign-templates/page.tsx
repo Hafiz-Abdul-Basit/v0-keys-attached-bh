@@ -30,6 +30,7 @@ import {
   Ban,
   Map as MapIcon,
   Search,
+  Hash,
 } from "lucide-react";
 import { PlaceholderAutocomplete } from "@/components/Placeholderautocomplete";
 import { KeysList } from "@/components/keys-list";
@@ -94,6 +95,8 @@ interface EsignSettings {
   keyOutput: EsignKeyOutput;
   replaceKeys: boolean;
   replaceControls: boolean;
+  /** number every tag afresh in document order (ignore numbers typed in Word) */
+  renumber: boolean;
   templates: EsignTemplates;
 }
 
@@ -105,6 +108,7 @@ const DEFAULT_SETTINGS: EsignSettings = {
   keyOutput: "encoded",
   replaceKeys: true,
   replaceControls: true,
+  renumber: false,
   templates: { ...DEFAULT_TEMPLATES },
 };
 
@@ -576,7 +580,9 @@ export default function EsignTemplatesPage() {
   const buildDocxFile = async (item: EsignFile) => {
     // 1. server: candidates → <c1>/<t1> markers, keys → <<KEY>>
     setProcessingStep("mapping checkboxes, textboxes and keys in Word");
-    const assignments = assignControlIds(item.candidates, item.types, item.analysis);
+    const assignments = assignControlIds(item.candidates, item.types, item.analysis, {
+      renumber: settings.renumber,
+    });
     const fd = new FormData();
     fd.append("file", item.file);
     fd.append("assignments", JSON.stringify(assignments));
@@ -1395,6 +1401,8 @@ export default function EsignTemplatesPage() {
                             setCandidateType(selectedIndex, id, type)
                           }
                           onBulk={(mode) => setAllCandidateTypes(selectedIndex, mode)}
+                          renumber={settings.renumber}
+                          onRenumberChange={(v) => setSettings((s) => ({ ...s, renumber: v }))}
                         />
                       )}
                     </>
@@ -1533,6 +1541,8 @@ function KindIcon({ kind }: { kind: DocxCandidate["kind"] }) {
       return <Shapes className={`${cls} text-gray-500`} />;
     case "blank":
       return <TextCursorInput className={`${cls} text-violet-600`} />;
+    case "marker":
+      return <Hash className={`${cls} text-sky-700`} />;
     default:
       return <SquareCheck className={`${cls} text-sky-600`} />;
   }
@@ -1542,13 +1552,18 @@ function ControlsPanel({
   file,
   onTypeChange,
   onBulk,
+  renumber,
+  onRenumberChange,
 }: {
   file: EsignFile;
   onTypeChange: (id: string, type: CandidateType) => void;
   onBulk: (mode: "suggested" | "ignore") => void;
+  renumber: boolean;
+  onRenumberChange: (v: boolean) => void;
 }) {
   const { analysis, candidates, types, stats } = file;
-  const assignments = assignControlIds(candidates, types, analysis);
+  const assignments = assignControlIds(candidates, types, analysis, { renumber });
+  const typedCount = candidates.filter((c) => c.kind === "marker").length;
   const undecided = candidates.filter(
     (c) => c.suggested === null && types[c.id] === undefined,
   ).length;
@@ -1633,6 +1648,27 @@ function ControlsPanel({
               </Button>
             </div>
           </div>
+
+          <label className="flex items-start gap-2 p-2.5 rounded-lg border border-sky-200 bg-sky-50 text-xs cursor-pointer">
+            <input
+              type="checkbox"
+              checked={renumber}
+              onChange={(e) => onRenumberChange(e.target.checked)}
+              className="mt-0.5 h-4 w-4"
+            />
+            <span>
+              <span className="font-medium">Renumber all tags in document order</span>
+              <span className="block text-gray-600 mt-0.5">
+                Off: tags typed in Word ({typedCount}) keep their numbers, new ones continue
+                after them. On: everything is numbered afresh top to bottom (c1, c2 … / t1,
+                t2 …), so a tag added in the middle shifts the ones after it. Type{" "}
+                <span className="font-mono">&lt;c&gt;</span>,{" "}
+                <span className="font-mono">&lt;cc&gt;</span> (checked) or{" "}
+                <span className="font-mono">&lt;t&gt;</span> in Word to add one without
+                choosing a number.
+              </span>
+            </span>
+          </label>
 
           {candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -1728,7 +1764,7 @@ function ControlsPanel({
         </div>
       )}
 
-      {hasWarnings && (
+      {hasWarnings && !(file.kind === "docx" && renumber) && (
         <div className="p-3 rounded-lg border border-orange-200 bg-orange-50 text-xs text-orange-800 space-y-1">
           {duplicateIds.length > 0 && (
             <p>
@@ -1759,17 +1795,19 @@ function ControlsPanel({
         </div>
       )}
 
-      {(checkboxes.length > 0 || textboxes.length > 0 || file.kind === "html") && (
+      {/* for Word files typed tags are listed above as candidates; the tables
+          only make sense for an .htm that already carries markers */}
+      {file.kind === "html" && (
         <>
           <ControlTable
-            title={file.kind === "docx" ? "Already typed as <c1> — checkboxes" : "Checkboxes"}
+            title="Checkboxes"
             icon={<SquareCheck className="h-4 w-4 text-sky-600" />}
             items={checkboxes}
             stats={stats?.controls}
             emptyText="No <c1> / <c1c> markers found."
           />
           <ControlTable
-            title={file.kind === "docx" ? "Already typed as <t1> — textboxes" : "Textboxes"}
+            title="Textboxes"
             icon={<TextCursorInput className="h-4 w-4 text-violet-600" />}
             items={textboxes}
             stats={stats?.controls}
@@ -1912,8 +1950,14 @@ function SettingsPanel({
         <ToggleRow
           checked={settings.replaceControls}
           onChange={(v) => onChange((s) => ({ ...s, replaceControls: v }))}
-          label="Convert markers to form controls in the HTML"
+          label="Convert tags to form controls in the HTML"
           hint="Replace <c1>, <c1c>, <t1> with the HTML below (the .docx keeps the markers)"
+        />
+        <ToggleRow
+          checked={settings.renumber}
+          onChange={(v) => onChange((s) => ({ ...s, renumber: v }))}
+          label="Renumber all tags in document order"
+          hint="Ignore the numbers typed in Word and number every checkbox / textbox afresh from top to bottom"
         />
       </div>
 

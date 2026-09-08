@@ -12,7 +12,9 @@ export type CandidateKind =
   | "bracketBox"
   | "blank"
   | "image"
-  | "shape";
+  | "shape"
+  /** a tag the team typed in Word: <c>, <cc>, <t> (unnumbered) or <c3>, <t1> */
+  | "marker";
 
 export type CandidateType = "checkbox" | "checkboxChecked" | "textbox" | "ignore";
 
@@ -32,6 +34,8 @@ export interface DocxCandidate {
   heightIn?: number;
   /** the literal text that was found ("[ ]", "_____", shape text …) */
   text?: string;
+  /** kind "marker" with a number typed in Word ("c7"): kept unless renumbering */
+  fixedId?: string;
 }
 
 export interface DocxAnalysis extends EsignAnalysis {
@@ -44,29 +48,60 @@ export interface DocxAssignment {
   id: string;
 }
 
+export interface AssignOptions {
+  /** ignore the numbers typed in Word and number every tag afresh in
+   *  document order (c1, c2 … / t1, t2 …) */
+  renumber?: boolean;
+}
+
 /**
- * Give every non-ignored candidate a control id in document order,
- * continuing after the highest <cN>/<tN> already typed in the file.
+ * Give every non-ignored candidate a control id in document order.
+ *
+ * Default: tags the team already typed with a number (<c7>) keep it and
+ * everything new continues after the highest number of that type.
+ * With `renumber`: all tags — typed or detected — are numbered afresh in
+ * the order they appear, so a tag inserted in the middle shifts the rest.
  */
 export function assignControlIds(
   candidates: DocxCandidate[],
   types: Record<string, CandidateType | undefined>,
   analysis: Pick<EsignAnalysis, "controls">,
+  options: AssignOptions = {},
 ): Record<string, DocxAssignment> {
-  let c = Math.max(
-    0,
-    ...analysis.controls.filter((x) => x.type === "checkbox").map((x) => x.n),
-  );
-  let t = Math.max(
-    0,
-    ...analysis.controls.filter((x) => x.type === "textbox").map((x) => x.n),
-  );
+  const renumber = options.renumber === true;
+  const fixedNumbers = (letter: "c" | "t") =>
+    candidates
+      .filter((x) => x.fixedId?.startsWith(letter))
+      .map((x) => parseInt((x.fixedId as string).slice(1), 10) || 0);
+  let c = renumber
+    ? 0
+    : Math.max(
+        0,
+        ...analysis.controls.filter((x) => x.type === "checkbox").map((x) => x.n),
+        ...fixedNumbers("c"),
+      );
+  let t = renumber
+    ? 0
+    : Math.max(
+        0,
+        ...analysis.controls.filter((x) => x.type === "textbox").map((x) => x.n),
+        ...fixedNumbers("t"),
+      );
   const out: Record<string, DocxAssignment> = {};
   for (const cand of candidates) {
     const type = types[cand.id] ?? cand.suggested ?? "ignore";
     if (type === "ignore") {
       out[cand.id] = { type, id: "" };
-    } else if (type === "textbox") {
+      continue;
+    }
+    const wantsText = type === "textbox";
+    const keepTyped =
+      !renumber &&
+      cand.fixedId &&
+      cand.fixedId.startsWith(wantsText ? "t" : "c");
+    if (keepTyped) {
+      out[cand.id] = { type, id: cand.fixedId as string };
+    } else if (wantsText) {
       out[cand.id] = { type, id: `t${++t}` };
     } else {
       out[cand.id] = { type, id: `c${++c}` };

@@ -247,6 +247,8 @@ interface Span {
   strong: boolean;
   /** span sits inside a <w:t> text node (vs. being a whole element) */
   inText?: boolean;
+  /** typed tag with a number ("c7"), kept unless the user renumbers */
+  fixedId?: string;
   /** build the replacement XML for this span given the escaped marker */
   replace: (markerXml: string) => string;
 }
@@ -409,6 +411,28 @@ function detectRunCharacters(xml: string): Span[] {
       const raw = wt[2];
       if (!raw) continue;
       const textStart = runStart + (wt.index ?? 0) + wt[0].indexOf(">") + 1;
+
+      // tags the team typed in Word: <c> <cc> <t> (unnumbered) or <c7> <t2>
+      // — in the XML they are entity-escaped: &lt;c7&gt;
+      for (const m of raw.matchAll(/&lt;\s*([ct])\s*(\d*)\s*(c?)\s*&gt;/gi)) {
+        const letter = m[1].toLowerCase() as "c" | "t";
+        const digits = m[2];
+        const checked = letter === "c" && m[3] !== "";
+        const typed = `<${letter}${digits}${checked ? "c" : ""}>`;
+        const start = textStart + (m.index ?? 0);
+        spans.push({
+          start,
+          end: start + m[0].length,
+          kind: "marker",
+          suggested: letter === "t" ? "textbox" : checked ? "checkboxChecked" : "checkbox",
+          label: digits ? `Typed ${typed} (numbered)` : `Typed ${typed} tag`,
+          text: typed,
+          fixedId: digits ? `${letter}${digits}` : undefined,
+          strong: true,
+          inText: true,
+          replace: (markerXml) => markerXml,
+        });
+      }
       const charRe =
         /&#x([0-9a-f]+);|&#(\d+);|[-☐-☒□▢◻❏-❒⬜]|\[\s?[xX✓✔√]\s?\]|\[\s?\]|_{3,}/gi;
       for (const c of raw.matchAll(charRe)) {
@@ -697,6 +721,7 @@ export function analyzeEsignDocx(
         widthIn: span.widthIn,
         heightIn: span.heightIn,
         text: span.text,
+        fixedId: span.fixedId,
       });
     });
   }
