@@ -28,8 +28,10 @@ import {
   Shapes,
   Wand2,
   Ban,
+  Map as MapIcon,
 } from "lucide-react";
 import { PlaceholderAutocomplete } from "@/components/Placeholderautocomplete";
+import { KeysList } from "@/components/keys-list";
 import { EsignPreview } from "@/components/esign/esign-preview";
 import { downloadFile } from "@/lib/download-helper";
 import {
@@ -942,6 +944,37 @@ export default function EsignTemplatesPage() {
                       <LegendSwatch bg="#ede9fe" border="#8b5cf6" label="Textbox" />
                     </div>
                   )}
+                  {/* build result — shown right after Build, on the built preview */}
+                  {current?.stats && previewMode === "replaced" && !isProcessing && (
+                    <div className="mt-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900 flex items-center gap-3 flex-wrap">
+                      <CheckCircle2 className="h-4 w-4 text-green-600 flex-shrink-0" />
+                      <span className="font-medium">Built.</span>
+                      <span>
+                        {Object.values(current.stats.keys).reduce((a, b) => a + b, 0)} keys
+                        replaced
+                      </span>
+                      <span>
+                        {Object.entries(current.stats.controls).filter(([m]) => m.startsWith("c")).reduce((a, [, n]) => a + n, 0)}{" "}
+                        checkboxes
+                      </span>
+                      <span>
+                        {Object.entries(current.stats.controls).filter(([m]) => m.startsWith("t")).reduce((a, [, n]) => a + n, 0)}{" "}
+                        textboxes
+                      </span>
+                      {current.stats.skipped.length > 0 && (
+                        <span className="text-orange-700">
+                          {current.stats.skipped.length} left as-is:{" "}
+                          <span className="font-mono">{current.stats.skipped.join(", ")}</span>
+                        </span>
+                      )}
+                      {current.kind === "docx" && (
+                        <span className="text-gray-600">
+                          · {current.htmlSource === "word" ? "Word HTML" : "converted in browser"} ·
+                          download gives .docx + .htm
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </CardHeader>
                 <CardContent className="flex-1 min-h-0 pt-0">
                   {isUploading || isProcessing ? (
@@ -1011,16 +1044,16 @@ export default function EsignTemplatesPage() {
           </div>
 
           {/* Right panel */}
-          <div className="w-[560px] flex-shrink-0">
+          <div className="w-[520px] max-w-[46vw] flex-shrink-0 min-w-0">
             <div className="h-full overflow-hidden p-4">
-              <Card className="h-full flex flex-col">
+              <Card className="h-full flex flex-col min-w-0">
                 <CardHeader className="flex-shrink-0 border-b pb-3">
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     <TabButton
                       active={panelTab === "controls"}
                       onClick={() => setPanelTab("controls")}
                       icon={<SquareCheck className="h-4 w-4" />}
-                      label="Checkboxes & Textboxes"
+                      label="Controls"
                       badge={needsReview > 0 ? needsReview : totalControls || undefined}
                       badgeTone={needsReview > 0 ? "orange" : "blue"}
                     />
@@ -1041,7 +1074,7 @@ export default function EsignTemplatesPage() {
                         active={panelTab === "wordhtml"}
                         onClick={() => setPanelTab("wordhtml")}
                         icon={<FileText className="h-4 w-4" />}
-                        label="Word HTML (optional)"
+                        label="Word HTML"
                         badge={current.linkedHtml ? 1 : undefined}
                         badgeTone="blue"
                       />
@@ -1055,7 +1088,7 @@ export default function EsignTemplatesPage() {
                   </div>
                 </CardHeader>
 
-                <CardContent className="flex-1 overflow-y-auto space-y-5 pt-4">
+                <CardContent className="flex-1 overflow-y-auto overflow-x-hidden space-y-5 pt-4 min-w-0">
                   {/* ── KEYS ── */}
                   {panelTab === "keys" && (
                     <>
@@ -1087,6 +1120,26 @@ export default function EsignTemplatesPage() {
                         <p className="text-sm text-muted-foreground">
                           Upload a file to see the keys it uses.
                         </p>
+                      )}
+
+                      {files.length > 0 && (
+                        <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-800">
+                          Keys that match the list are replaced automatically. Anything
+                          else is handled below under <strong>Manage Mappings</strong>,
+                          exactly like the DocX Key Replacer.
+                        </div>
+                      )}
+
+                      {(uniqueUnmatched.length > 0 || files.length > 0) && (
+                        <h4 className="font-semibold text-sm flex items-center gap-2 border-t pt-4">
+                          <MapIcon className="h-4 w-4 text-gray-500" />
+                          Manage Mappings
+                          {uniqueUnmatched.length > 0 && (
+                            <Badge variant="destructive" className="ml-1 text-xs">
+                              {uniqueUnmatched.length - mappedCount} unmatched
+                            </Badge>
+                          )}
+                        </h4>
                       )}
 
                       {uniqueUnmatched.length > 0 && (
@@ -1266,6 +1319,21 @@ export default function EsignTemplatesPage() {
                           </div>
                         </div>
                       )}
+                      {/* the same placeholder list the DocX module shows */}
+                      {files.length > 0 && (
+                        <div className="space-y-2 border-t pt-4">
+                          <h4 className="font-semibold text-sm">Available Placeholders</h4>
+                          <div className="h-[420px]">
+                            <KeysList
+                              matchedKeys={uniqueMatched}
+                              unmatchedKeys={[]}
+                              onKeyUpdate={(key, value) =>
+                                setMappings((prev) => ({ ...prev, [key]: value }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -1392,7 +1460,7 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${active ? "bg-primary text-primary-foreground" : "hover:bg-muted text-gray-700"}`}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors ${active ? "bg-primary text-primary-foreground" : "hover:bg-muted text-gray-700"}`}
     >
       {icon}
       {label}

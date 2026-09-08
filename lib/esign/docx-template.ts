@@ -119,7 +119,9 @@ function paragraphText(xml: string): string {
 function partText(xml: string): string {
   const parts: string[] = [];
   for (const m of xml.matchAll(PARAGRAPH_RE)) parts.push(paragraphText(m[0]));
-  return parts.join(" ");
+  // paragraphs (and table cells) are separated by line breaks so a key
+  // name can never be assembled across two of them
+  return parts.join("\n");
 }
 
 function relsFor(zip: PizZip, part: string): Map<string, string> {
@@ -680,7 +682,7 @@ export function analyzeEsignDocx(
   for (const part of parts) {
     const xml = zip.file(part)?.asText();
     if (!xml) continue;
-    text += " " + partText(xml);
+    text += "\n" + partText(xml);
 
     const key = partKey(part);
     detectSpans(xml, zip, part).forEach((span, i) => {
@@ -699,7 +701,10 @@ export function analyzeEsignDocx(
     });
   }
 
-  const analysis = analyzeEsignText(text.replace(/\s+/g, " ").trim(), options);
+  const analysis = analyzeEsignText(
+    text.replace(/[ \t\r]+/g, " ").replace(/\s*\n\s*/g, "\n").trim(),
+    options,
+  );
   return { ...analysis, candidates };
 }
 

@@ -356,12 +356,15 @@ export function htmlToText(html: string): string {
   // keep literal <<KEY>> and <c1> alive through tag stripping
   s = s.replace(LITERAL_KEY_RE, "&lt;&lt;$1&gt;&gt;");
   s = s.replace(LITERAL_MARKER_RE, "&lt;$1&gt;");
-  s = s.replace(BLOCK_TAG_RE, " ");
+  // block boundaries become line breaks so a key name can never be
+  // assembled from the end of one paragraph/cell and the start of the next
+  s = s.replace(BLOCK_TAG_RE, "\n");
   s = s.replace(/<[^>]*>/g, "");
   s = decodeEntities(s);
   return s
     .replace(/ /g, " ")
-    .replace(/[ \t\r\n]+/g, " ")
+    .replace(/[ \t\r]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
     .trim();
 }
 
@@ -374,7 +377,9 @@ const PLAIN_MIN_LENGTH = 6; // "GRADE" would otherwise eat every "Grade:" label
 
 /** "STUDENTNAME" → /(?<![A-Za-z0-9])s[\s_]*t[\s_]*u…e(?![A-Za-z0-9])/gi */
 export function plainTextRegex(norm: string): RegExp {
-  const loose = norm.split("").map(escapeRegExp).join("[\\s_-]*");
+  // spaces / _ / - may sit between the letters, but never a line break
+  // (the text projection uses \n for paragraph and table-cell boundaries)
+  const loose = norm.split("").map(escapeRegExp).join("[ \\t\\u00a0_-]*");
   return new RegExp(`(?<![A-Za-z0-9])${loose}(?![A-Za-z0-9])`, "gi");
 }
 
@@ -768,7 +773,12 @@ export function plainHtmlRegex(raw: string): RegExp {
   // exact spelling of this variant ("Student ID" ≠ "STUDENT ID"); only the
   // separators between letters are flexible
   const letters = raw.replace(/[\s_-]+/g, "");
-  const loose = letters.split("").map(escapeRegExp).join("(?:<[^>]*>|&nbsp;|&#160;|[\\s_-])*");
+  // only INLINE tags may sit between the letters (Word / docx-preview split
+  // runs into <span>s); a block boundary (</p>, <td> …) ends the match so
+  // "STUDENT" at the end of a heading never joins "Name" in the next cell
+  const inlineGap =
+    "(?:<\\/?(?:span|b|i|u|em|strong|font|sup|sub|small|big|s|strike|o:p|st1:[a-z]+)\\b[^>]*>|&nbsp;|&#160;|[ \\t\\u00a0_-])*";
+  const loose = letters.split("").map(escapeRegExp).join(inlineGap);
   return new RegExp(`(?<![A-Za-z0-9])${loose}(?![A-Za-z0-9])`, "g");
 }
 
