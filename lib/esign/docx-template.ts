@@ -27,6 +27,7 @@ import PizZip from "pizzip";
 import {
   analyzeEsignText,
   decodeEntities,
+  hasMappingFor,
   keyTargetSpecs,
   normalizeKey,
   resolveToken,
@@ -971,7 +972,8 @@ export function buildEsignDocx(
   const rules: TextRule[] = [];
   if (replaceKeys) {
     for (const spec of keyTargetSpecs(analysis, mappings)) {
-      if (excluded.has(spec.raw)) continue;
+      // an explicit mapping always wins over "not ticked"
+      if (excluded.has(spec.raw) && !hasMappingFor(spec.raw, mappings)) continue;
       const resolved = resolveToken(spec.raw, mappings);
       if (!resolved) {
         if (!spec.fromMapping) stats.skipped.push(spec.raw);

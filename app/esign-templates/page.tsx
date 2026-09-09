@@ -253,9 +253,17 @@ export default function EsignTemplatesPage() {
     );
     return Array.from(seen.values());
   })();
-  /** everything plain-text that is NOT ticked stays untouched */
+  /** a plain-text suggestion counts as "on" when ticked OR when the user
+   *  mapped that text under Manage Mappings */
+  const isMappedText = (raw: string) => {
+    const norm = raw.replace(/[\s_-]+/g, "").toUpperCase();
+    return Object.entries(mappings).some(
+      ([k, v]) => v && k.replace(/[\s_-]+/g, "").toUpperCase() === norm,
+    );
+  };
+  /** everything plain-text that is neither ticked nor mapped stays untouched */
   const excluded = plainTokens
-    .filter((t) => !includedPlain.includes(t.raw))
+    .filter((t) => !includedPlain.includes(t.raw) && !isMappedText(t.raw))
     .map((t) => t.raw);
   const customEntries = Object.entries(mappings).filter(
     ([k, v]) => !uniqueUnmatched.includes(k) && v,
@@ -1348,7 +1356,8 @@ export default function EsignTemplatesPage() {
                           </div>
                           <div className="grid gap-1.5">
                             {plainTokens.map((t) => {
-                              const on = includedPlain.includes(t.raw);
+                              const mapped = isMappedText(t.raw);
+                              const on = includedPlain.includes(t.raw) || mapped;
                               return (
                                 <label
                                   key={t.raw}
@@ -1357,6 +1366,8 @@ export default function EsignTemplatesPage() {
                                   <input
                                     type="checkbox"
                                     checked={on}
+                                    disabled={mapped}
+                                    title={mapped ? "Mapped under Manage Mappings" : undefined}
                                     onChange={(e) =>
                                       setIncludedPlain((prev) =>
                                         e.target.checked
@@ -1368,6 +1379,11 @@ export default function EsignTemplatesPage() {
                                   />
                                   <span className="font-mono">{t.raw}</span>
                                   <span className="text-xs text-gray-500">×{t.count}</span>
+                                  {mapped && (
+                                    <span className="text-[11px] px-1.5 rounded bg-blue-100 text-blue-800">
+                                      mapped
+                                    </span>
+                                  )}
                                   <span className="ml-auto font-mono text-xs text-green-800">
                                     → &lt;&lt;{t.knownKey}&gt;&gt;
                                   </span>

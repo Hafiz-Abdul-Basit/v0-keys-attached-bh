@@ -559,6 +559,11 @@ export type ResolvedToken =
   | { kind: "placeholder"; key: string }
   | { kind: "text"; text: string };
 
+/** true when the user gave a mapping for this token (exact or same key name) */
+export function hasMappingFor(raw: string, mappings: Record<string, string>): boolean {
+  return findMapping(raw, normalizeKey(raw), mappings) !== undefined;
+}
+
 function findMapping(
   raw: string,
   norm: string,
@@ -889,7 +894,8 @@ export function transformEsignHtml(
 
   if (replaceKeys) {
     for (const target of collectKeyTargets(analysis, mappings)) {
-      if (excluded.has(target.raw)) continue;
+      // an explicit mapping always wins over "not ticked"
+      if (excluded.has(target.raw) && !hasMappingFor(target.raw, mappings)) continue;
       const resolved = resolveToken(target.raw, mappings);
       if (!resolved) {
         if (!target.fromMapping) stats.skipped.push(target.raw);
@@ -967,7 +973,7 @@ export function highlightEsignHtml(
   for (const target of collectKeyTargets(analysis, mappings)) {
     const token = analysis.tokens.find((t) => t.raw === target.raw);
     const resolved = resolveToken(target.raw, mappings);
-    const cls = excluded.has(target.raw)
+    const cls = excluded.has(target.raw) && !hasMappingFor(target.raw, mappings)
       ? "es-key-excluded"
       : token?.form === "plain"
         ? "es-key-plain"
