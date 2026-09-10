@@ -16,7 +16,9 @@ export type CandidateKind =
   /** a tag the team typed in Word: <c>, <cc>, <t> (unnumbered) or <c3>, <t1> */
   | "marker"
   /** a list paragraph whose bullet glyph is a box (☐ from numbering.xml) */
-  | "bullet";
+  | "bullet"
+  /** an empty table cell in a row that has text (initials / tick box column) */
+  | "cell";
 
 export type CandidateType = "checkbox" | "checkboxChecked" | "textbox" | "ignore";
 

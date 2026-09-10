@@ -981,6 +981,74 @@ function dropKeyPadding(xml: string, spans: Span[]): Span[] {
   });
 }
 
+/* ─────────── empty table cells (initials / tick-box columns) ─────────── */
+
+/** innermost <w:tc> … </w:tc> (no nested table inside) */
+const CELL_RE = /<w:tc>(?:(?!<w:tc>)[\s\S])*?<\/w:tc>/g;
+const ROW_RE = /<w:tr\b[^>]*>(?:(?!<w:tr\b)[\s\S])*?<\/w:tr>/g;
+
+/**
+ * Forms often have a narrow empty column next to each statement: a box for
+ * initials or a tick. Nothing marks it as a control, so every empty cell in
+ * a row that has text is offered as a candidate — ignored by default, one
+ * click turns all of them into checkboxes or textboxes.
+ */
+function detectEmptyCells(xml: string): Span[] {
+  const spans: Span[] = [];
+  for (const row of xml.matchAll(ROW_RE)) {
+    const rowXml = row[0];
+    const rowStart = row.index ?? 0;
+    const cells = Array.from(rowXml.matchAll(CELL_RE));
+    if (cells.length < 2) continue;
+    const texts = cells.map((c) => paragraphText(c[0]).replace(/\s+/g, " ").trim());
+    if (!texts.some((t) => t.length > 0)) continue; // spacer row
+    const rowText = texts.filter(Boolean).join(" | ");
+    cells.forEach((c, i) => {
+      if (texts[i]) return;
+      const cellXml = c[0];
+      // anything already in the cell (a line, a tab, a border, a control) is
+      // handled by the other detectors
+      if (/<w:(?:drawing|pict|sdt|fldChar|sym|tbl|tab|pBdr)\b|<w:t\b[^>]*>[^<]+<\/w:t>/.test(cellXml)) return;
+      const cellStart = rowStart + (c.index ?? 0);
+      const label = `Empty table cell (column ${i + 1} of ${cells.length})`;
+      const lastP = cellXml.lastIndexOf("</w:p>");
+      if (lastP >= 0) {
+        // <w:p><w:pPr>…</w:pPr></w:p> → put the tag run before </w:p>
+        const pXml = cellXml.slice(cellXml.lastIndexOf("<w:p", lastP), lastP);
+        const markRPr = pXml.match(/<w:pPr>[\s\S]*?<w:rPr>([\s\S]*?)<\/w:rPr>[\s\S]*?<\/w:pPr>/)
+          ? `<w:rPr>${pXml.match(/<w:pPr>[\s\S]*?<w:rPr>([\s\S]*?)<\/w:rPr>/)?.[1] ?? ""}</w:rPr>`
+          : "";
+        spans.push({
+          start: cellStart + lastP,
+          end: cellStart + lastP,
+          kind: "cell",
+          suggested: "ignore",
+          label,
+          text: rowText,
+          strong: true,
+          replace: (markerXml) => markerRun(markRPr, markerXml),
+        });
+        return;
+      }
+      // Word also writes empty paragraphs self-closed: <w:p w:rsidR="…"/>
+      const selfClosed = Array.from(cellXml.matchAll(/<w:p\b[^>]*\/>/g)).pop();
+      if (!selfClosed) return;
+      const start = cellStart + (selfClosed.index ?? 0);
+      spans.push({
+        start,
+        end: start + selfClosed[0].length,
+        kind: "cell",
+        suggested: "ignore",
+        label,
+        text: rowText,
+        strong: true,
+        replace: (markerXml) => `<w:p>${markerRun("", markerXml)}</w:p>`,
+      });
+    });
+  }
+  return spans;
+}
+
 function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
   const rels = relsFor(zip, part);
   const spans = resolveOverlaps([
@@ -990,6 +1058,7 @@ function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
     ...detectGraphics(xml, zip, rels),
     ...detectLines(xml),
     ...detectBulletBoxes(xml, loadBulletBoxes(zip)),
+    ...detectEmptyCells(xml),
   ]);
   return dropKeyPadding(xml, spans);
 }
@@ -1012,7 +1081,10 @@ export function analyzeEsignDocx(
     text += "\n" + partText(xml);
 
     const key = partKey(part);
-    detectSpans(xml, zip, part).forEach((span, i) => {
+    // controls live in the body only; headers/footers get keys replaced
+    // but never checkboxes / textboxes
+    const spans = /document\.xml$/.test(part) ? detectSpans(xml, zip, part) : [];
+    spans.forEach((span, i) => {
       candidates.push({
         id: `${key}-${i}`,
         part,
@@ -1080,7 +1152,9 @@ function plainRegex(form: EsignTokenForm | "text", raw: string, norm: string): R
   if (form === "bracket") return new RegExp(`(?:<<|«)\\s*${loose}\\s*(?:>>|»)`, "gi");
   if (form === "at") return new RegExp(`@${escapeRegExp(norm)}(?![A-Za-z0-9_])`, "gi");
   if (form === "bare") {
-    return new RegExp(`(?<![A-Za-z0-9_@])${escapeRegExp(norm)}(?![A-Za-z0-9_])`, "g");
+    // "STUDENTNAME_____": the word is the key, the underscores stay
+    const letters = norm.split("").map(escapeRegExp).join("_*");
+    return new RegExp(`(?<![A-Za-z0-9@])${letters}(?![A-Za-z0-9])`, "g");
   }
   if (form === "plain") {
     // exact spelling of this variant; only separators are flexible
@@ -1190,7 +1264,7 @@ export function buildEsignDocx(
     const xml = zip.file(part)?.asText();
     if (!xml) continue;
     const key = partKey(part);
-    const spans = detectSpans(xml, zip, part);
+    const spans = /document\.xml$/.test(part) ? detectSpans(xml, zip, part) : [];
 
     // 1. candidates → marker text, applied back-to-front so offsets stay valid
     let out = xml;

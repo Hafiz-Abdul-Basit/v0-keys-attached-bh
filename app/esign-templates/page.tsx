@@ -31,6 +31,7 @@ import {
   Map as MapIcon,
   Search,
   Hash,
+  Table,
 } from "lucide-react";
 import { PlaceholderAutocomplete } from "@/components/Placeholderautocomplete";
 import { KeysList } from "@/components/keys-list";
@@ -103,6 +104,9 @@ interface EsignSettings {
 }
 
 type PanelTab = "keys" | "controls" | "wordhtml" | "settings";
+
+/** bulk actions on the candidate list */
+type BulkMode = "suggested" | "ignore" | "cellsCheckbox" | "cellsTextbox" | "cellsIgnore";
 
 const DEFAULT_SETTINGS: EsignSettings = {
   // encoded is the only form a browser renders as <<KEY>>; a literal
@@ -440,13 +444,20 @@ export default function EsignTemplatesPage() {
       ),
     );
 
-  const setAllCandidateTypes = (
-    fileIndex: number,
-    mode: "suggested" | "ignore",
-  ) =>
+  const setAllCandidateTypes = (fileIndex: number, mode: BulkMode) =>
     setFiles((prev) =>
       prev.map((f, i) => {
         if (i !== fileIndex) return f;
+        // the "empty cells" modes only touch empty-cell candidates
+        if (mode === "cellsCheckbox" || mode === "cellsTextbox" || mode === "cellsIgnore") {
+          const types = { ...f.types };
+          f.candidates.forEach((c) => {
+            if (c.kind !== "cell") return;
+            types[c.id] =
+              mode === "cellsCheckbox" ? "checkbox" : mode === "cellsTextbox" ? "textbox" : "ignore";
+          });
+          return { ...f, types };
+        }
         const types: Record<string, CandidateType> = {};
         f.candidates.forEach((c) => {
           types[c.id] = mode === "ignore" ? "ignore" : (c.suggested ?? "ignore");
@@ -1663,6 +1674,8 @@ function KindIcon({ kind }: { kind: DocxCandidate["kind"] }) {
       return <TextCursorInput className={`${cls} text-violet-600`} />;
     case "marker":
       return <Hash className={`${cls} text-sky-700`} />;
+    case "cell":
+      return <Table className={`${cls} text-amber-700`} />;
     default:
       return <SquareCheck className={`${cls} text-sky-600`} />;
   }
@@ -1680,7 +1693,7 @@ function ControlsPanel({
 }: {
   file: EsignFile;
   onTypeChange: (id: string, type: CandidateType) => void;
-  onBulk: (mode: "suggested" | "ignore") => void;
+  onBulk: (mode: BulkMode) => void;
   renumber: boolean;
   onRenumberChange: (v: boolean) => void;
   onInsertTag: (
@@ -1791,6 +1804,30 @@ function ControlsPanel({
               </Button>
             </div>
           </div>
+
+          {candidates.some((c) => c.kind === "cell") && (
+            <div className="p-2.5 rounded-lg border border-amber-200 bg-amber-50 text-xs space-y-1.5">
+              <div className="font-medium">
+                {candidates.filter((c) => c.kind === "cell").length} empty table cells found
+                (initials / tick-box columns). They are ignored unless you choose:
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                <Button size="sm" variant="outline" className="h-7 text-xs bg-white" onClick={() => onBulk("cellsCheckbox")}>
+                  All empty cells → Checkbox
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs bg-white" onClick={() => onBulk("cellsTextbox")}>
+                  All empty cells → Textbox
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onBulk("cellsIgnore")}>
+                  Ignore them
+                </Button>
+              </div>
+              <div className="text-gray-600">
+                Each one can still be changed on its own in the list below (search
+                &ldquo;cell&rdquo;).
+              </div>
+            </div>
+          )}
 
           <label className="flex items-start gap-2 p-2.5 rounded-lg border border-sky-200 bg-sky-50 text-xs cursor-pointer">
             <input

@@ -372,7 +372,10 @@ export function htmlToText(html: string): string {
 
 const TEXT_BRACKET_RE = /(?:<<|«)\s*([^<>«»]+?)\s*(?:>>|»)/g;
 const TEXT_AT_RE = /@([A-Za-z][A-Za-z0-9_]*)/g;
-const TEXT_BARE_RE = /(?<![A-Za-z0-9_@])[A-Z][A-Z0-9_]{3,}(?![A-Za-z0-9_])/g;
+// CAPITAL key names; underscores may join parts (STUDENT_NAME) but a run of
+// underscores after the word ("STUDENTNAME_____", the line to write on) is
+// not part of it
+const TEXT_BARE_RE = /(?<![A-Za-z0-9@])[A-Z][A-Z0-9]*(?:_+[A-Z0-9]+)*(?![A-Za-z0-9])/g;
 const PLAIN_MIN_LENGTH = 6; // "GRADE" would otherwise eat every "Grade:" label
 
 /** "STUDENTNAME" → /(?<![A-Za-z0-9])s[\s_]*t[\s_]*u…e(?![A-Za-z0-9])/gi */
@@ -440,11 +443,11 @@ export function analyzeEsignText(
       .map((t) => t.norm),
   );
   for (const m of text.matchAll(TEXT_BARE_RE)) {
-    const norm = m[0];
+    const norm = normalizeKey(m[0]);
     // bare words only count when they are a known key and the same key
     // was not already written in proper <<KEY>> form
-    if (!KEY_BY_NORM.has(norm) || bracketNorms.has(norm)) continue;
-    addToken(norm, "bare");
+    if (norm.length < 4 || !KEY_BY_NORM.has(norm) || bracketNorms.has(norm)) continue;
+    addToken(m[0], "bare");
   }
 
   // plain-text key names: "studentname", "Student Name", "student_name"…
@@ -460,7 +463,7 @@ export function analyzeEsignText(
   // only CAPITAL words that really are keys count as consumed — "STUDENT"
   // in "STUDENT ID" must not hide the plain-text match "STUDENT ID"
   for (const m of text.matchAll(TEXT_BARE_RE)) {
-    if (KEY_BY_NORM.has(m[0])) {
+    if (KEY_BY_NORM.has(normalizeKey(m[0]))) {
       consumed.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
     }
   }
@@ -647,8 +650,10 @@ export function atRegex(norm: string): RegExp {
   return new RegExp(`@${joinWith(norm, TAG_GAP)}(?![A-Za-z0-9_])`, "gi");
 }
 export function bareRegex(norm: string): RegExp {
+  // underscores may sit between the letters (STUDENT_NAME) and a run of
+  // underscores after the word is the line to write on, not the word
   return new RegExp(
-    `(?<![A-Za-z0-9_@])${joinWith(norm, TAG_GAP)}(?![A-Za-z0-9_])`,
+    `(?<![A-Za-z0-9@])${joinWith(norm, "(?:<[^>]*>|_)*")}(?![A-Za-z0-9])`,
     "g",
   );
 }
