@@ -559,6 +559,11 @@ export type ResolvedToken =
   | { kind: "placeholder"; key: string }
   | { kind: "text"; text: string };
 
+/** true when `raw` (any form: <<KEY>>, @KEY, KEY, "Key Name") is a keys.json key */
+export function isKnownKeyName(raw: string): boolean {
+  return KEY_BY_NORM.has(normalizeKey(raw));
+}
+
 /** true when the user gave a mapping for this token (exact or same key name) */
 export function hasMappingFor(raw: string, mappings: Record<string, string>): boolean {
   return findMapping(raw, normalizeKey(raw), mappings) !== undefined;

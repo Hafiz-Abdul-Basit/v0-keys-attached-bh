@@ -28,6 +28,7 @@ import {
   analyzeEsignText,
   decodeEntities,
   hasMappingFor,
+  isKnownKeyName,
   keyTargetSpecs,
   normalizeKey,
   resolveToken,
@@ -873,15 +874,124 @@ function detectLines(xml: string): Span[] {
   return spans;
 }
 
+/* ───────────── list bullets that are boxes (numbering.xml) ───────────── */
+
+type BulletBoxes = Map<string, Map<string, { checked: boolean; glyph: string }>>;
+
+/**
+ * Very common in client forms: a bulleted list whose bullet glyph is ☐
+ * (Segoe UI Symbol) or a Wingdings box. The box is not in the document
+ * text at all — it lives in word/numbering.xml — so it has to be resolved
+ * per numId / level.
+ */
+function loadBulletBoxes(zip: PizZip): BulletBoxes {
+  const out: BulletBoxes = new Map();
+  const xml = zip.file("word/numbering.xml")?.asText();
+  if (!xml) return out;
+
+  const byAbstract = new Map<string, Map<string, { checked: boolean; glyph: string }>>();
+  for (const abs of xml.matchAll(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g)) {
+    const levels = new Map<string, { checked: boolean; glyph: string }>();
+    for (const lvl of abs[2].matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvl>/g)) {
+      const body = lvl[2];
+      if (!/<w:numFmt\b[^>]*w:val="bullet"/.test(body)) continue;
+      const glyph = decodeEntities(body.match(/<w:lvlText\b[^>]*w:val="([^"]*)"/)?.[1] ?? "");
+      if (!glyph) continue;
+      const font = body.match(/<w:rFonts\b[^>]*\bw:(?:ascii|hAnsi)="([^"]+)"/)?.[1] ?? "";
+      let checked: boolean | null = null;
+      if (glyph in UNICODE_BOXES) checked = UNICODE_BOXES[glyph];
+      else {
+        const code = glyph.codePointAt(0) ?? 0;
+        if (code >= 0xf000 && code <= 0xf0ff) checked = symbolState(font, code);
+      }
+      if (checked !== null) levels.set(lvl[1], { checked, glyph });
+    }
+    if (levels.size) byAbstract.set(abs[1], levels);
+  }
+
+  for (const num of xml.matchAll(/<w:num\b[^>]*w:numId="(\d+)"[^>]*>([\s\S]*?)<\/w:num>/g)) {
+    const abs = num[2].match(/<w:abstractNumId\b[^>]*w:val="(\d+)"/)?.[1];
+    const levels = abs ? byAbstract.get(abs) : undefined;
+    if (levels) out.set(num[1], levels);
+  }
+  return out;
+}
+
+function detectBulletBoxes(xml: string, boxes: BulletBoxes): Span[] {
+  const spans: Span[] = [];
+  if (!boxes.size) return spans;
+  for (const pm of xml.matchAll(PARAGRAPH_RE)) {
+    const pXml = pm[0];
+    const pStart = pm.index ?? 0;
+    const pPrM = pXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+    if (!pPrM) continue;
+    const pPr = pPrM[0];
+    const numPrM = pPr.match(/<w:numPr>[\s\S]*?<\/w:numPr>/);
+    if (!numPrM) continue;
+    const numId = numPrM[0].match(/<w:numId\b[^>]*w:val="(\d+)"/)?.[1] ?? "";
+    const ilvl = numPrM[0].match(/<w:ilvl\b[^>]*w:val="(\d+)"/)?.[1] ?? "0";
+    const box = boxes.get(numId)?.get(ilvl);
+    if (!box) continue;
+
+    const pPrStart = pStart + (pPrM.index ?? 0);
+    const numPrStart = pPrStart + (numPrM.index ?? 0);
+    const pPrEnd = pPrStart + pPr.length;
+    // everything in pPr after the numPr stays; the numPr itself goes (no
+    // more bullet) and the tag becomes the paragraph's first run
+    const rest = pPr.slice((numPrM.index ?? 0) + numPrM[0].length, pPr.length - "</w:pPr>".length);
+    const markRPr = pPr.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? "";
+    spans.push({
+      start: numPrStart,
+      end: pPrEnd,
+      kind: "bullet",
+      suggested: box.checked ? "checkboxChecked" : "checkbox",
+      label: `List bullet ${box.glyph} (box)`,
+      text: box.glyph,
+      strong: true,
+      replace: (markerXml) => `${rest}</w:pPr>${markerRun(markRPr, markerXml)}`,
+    });
+  }
+  return spans;
+}
+
+/* ─────── blanks that are only padding after a key (STUDENTNAME_____) ─────── */
+
+const BLANK_LABEL_RE = /^(?:Underscore blank|Underlined blank|Underlined tab|Tab leader)/;
+
+/** text of the paragraph before the span (tags removed, entities decoded) */
+function textBeforeSpan(xml: string, span: Span): string {
+  const pStart = Math.max(xml.lastIndexOf("<w:p ", span.start), xml.lastIndexOf("<w:p>", span.start));
+  const pEnd = xml.indexOf("</w:p>", span.end);
+  if (pStart < 0 || pEnd < 0) return "";
+  const marked = textWithMark(xml, span, pStart, pEnd);
+  const i = marked.indexOf(CONTEXT_MARK);
+  return i < 0 ? "" : marked.slice(0, i);
+}
+
+/**
+ * "Student Name: STUDENTFULLNAME_______" — the underscores / underline right
+ * after a key are the key's own line, not a field. Drop such blanks.
+ */
+function dropKeyPadding(xml: string, spans: Span[]): Span[] {
+  return spans.filter((s) => {
+    if (s.kind !== "blank" || !BLANK_LABEL_RE.test(s.label)) return true;
+    const before = textBeforeSpan(xml, s).replace(/[\s_:\-–—]+$/, "");
+    const tail = before.match(/(?:<<\s*[^<>]+?\s*>>|@[A-Za-z0-9_]+|[A-Z][A-Z0-9_]{3,})$/)?.[0];
+    return !(tail && isKnownKeyName(tail));
+  });
+}
+
 function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
   const rels = relsFor(zip, part);
-  return resolveOverlaps([
+  const spans = resolveOverlaps([
     ...detectContentControls(xml),
     ...detectLegacyFields(xml),
     ...detectRunCharacters(xml),
     ...detectGraphics(xml, zip, rels),
     ...detectLines(xml),
+    ...detectBulletBoxes(xml, loadBulletBoxes(zip)),
   ]);
+  return dropKeyPadding(xml, spans);
 }
 
 /* ───────────────────────────── analyse ───────────────────────────── */

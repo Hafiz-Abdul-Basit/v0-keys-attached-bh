@@ -14,7 +14,9 @@ export type CandidateKind =
   | "image"
   | "shape"
   /** a tag the team typed in Word: <c>, <cc>, <t> (unnumbered) or <c3>, <t1> */
-  | "marker";
+  | "marker"
+  /** a list paragraph whose bullet glyph is a box (☐ from numbering.xml) */
+  | "bullet";
 
 export type CandidateType = "checkbox" | "checkboxChecked" | "textbox" | "ignore";
 
