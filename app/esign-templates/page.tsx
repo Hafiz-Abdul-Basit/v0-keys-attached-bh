@@ -106,7 +106,17 @@ interface EsignSettings {
 type PanelTab = "keys" | "controls" | "wordhtml" | "settings";
 
 /** bulk actions on the candidate list */
-type BulkMode = "suggested" | "ignore" | "cellsCheckbox" | "cellsTextbox" | "cellsIgnore";
+type BulkMode =
+  | "suggested"
+  | "ignore"
+  | "cellsCheckbox"
+  | "cellsTextbox"
+  | "cellsIgnore"
+  | "bulletsCheckbox"
+  | "bulletsIgnore";
+
+/** a list bullet that is not a box/square (• ➢ …): offered, ignored by default */
+const isPlainBullet = (c: DocxCandidate) => c.kind === "bullet" && c.suggested === "ignore";
 
 const DEFAULT_SETTINGS: EsignSettings = {
   // encoded is the only form a browser renders as <<KEY>>; a literal
@@ -259,12 +269,9 @@ export default function EsignTemplatesPage() {
   })();
   /** a plain-text suggestion counts as "on" when ticked OR when the user
    *  mapped that text under Manage Mappings */
-  const isMappedText = (raw: string) => {
-    const norm = raw.replace(/[\s_-]+/g, "").toUpperCase();
-    return Object.entries(mappings).some(
-      ([k, v]) => v && k.replace(/[\s_-]+/g, "").toUpperCase() === norm,
-    );
-  };
+  const isMappedText = (raw: string) =>
+    // exact spelling only: mapping "Guardian Name" does not cover "GUARDIAN NAME"
+    Object.entries(mappings).some(([k, v]) => v && k.trim() === raw.trim());
   /** everything plain-text that is neither ticked nor mapped stays untouched */
   const excluded = plainTokens
     .filter((t) => !includedPlain.includes(t.raw) && !isMappedText(t.raw))
@@ -455,6 +462,15 @@ export default function EsignTemplatesPage() {
             if (c.kind !== "cell") return;
             types[c.id] =
               mode === "cellsCheckbox" ? "checkbox" : mode === "cellsTextbox" ? "textbox" : "ignore";
+          });
+          return { ...f, types };
+        }
+        // the "bullets" modes only touch plain list bullets (• ➢ …)
+        if (mode === "bulletsCheckbox" || mode === "bulletsIgnore") {
+          const types = { ...f.types };
+          f.candidates.forEach((c) => {
+            if (!isPlainBullet(c)) return;
+            types[c.id] = mode === "bulletsCheckbox" ? "checkbox" : "ignore";
           });
           return { ...f, types };
         }
@@ -1804,6 +1820,28 @@ function ControlsPanel({
               </Button>
             </div>
           </div>
+
+          {candidates.some(isPlainBullet) && (
+            <div className="p-2.5 rounded-lg border border-amber-200 bg-amber-50 text-xs space-y-1.5">
+              <div className="font-medium">
+                {candidates.filter(isPlainBullet).length} list bullets found (• ➢ …). Box
+                and square bullets are already suggested as checkboxes; these are ignored
+                unless you choose:
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                <Button size="sm" variant="outline" className="h-7 text-xs bg-white" onClick={() => onBulk("bulletsCheckbox")}>
+                  All bullets → Checkbox
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onBulk("bulletsIgnore")}>
+                  Ignore them
+                </Button>
+              </div>
+              <div className="text-gray-600">
+                Each one can still be changed on its own in the list below (search
+                &ldquo;bullet&rdquo;).
+              </div>
+            </div>
+          )}
 
           {candidates.some((c) => c.kind === "cell") && (
             <div className="p-2.5 rounded-lg border border-amber-200 bg-amber-50 text-xs space-y-1.5">

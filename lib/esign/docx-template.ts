@@ -876,7 +876,45 @@ function detectLines(xml: string): Span[] {
 
 /* ───────────── list bullets that are boxes (numbering.xml) ───────────── */
 
-type BulletBoxes = Map<string, Map<string, { checked: boolean; glyph: string }>>;
+interface BulletGlyph {
+  /** box glyph: its checked state; other bullets: null */
+  checked: boolean | null;
+  /** what to show in the label (▪ • ➢ …) */
+  glyph: string;
+  /** a square bullet (▪ ■): clients use these as tick boxes too */
+  square: boolean;
+}
+type BulletBoxes = Map<string, Map<string, BulletGlyph>>;
+
+/** Wingdings / Symbol bullet codes that are not boxes, as display glyphs */
+const BULLET_GLYPHS: Record<string, Record<number, string>> = {
+  wingdings: {
+    0xa7: "▪",
+    0x6e: "■",
+    0x6c: "●",
+    0x6d: "○",
+    0x76: "❖",
+    0x77: "◆",
+    0xd8: "➢",
+    0xfc: "✔",
+    0xf0: "⇨",
+    0xa1: "○",
+  },
+  symbol: { 0xb7: "•", 0xd8: "•", 0xa8: "◆" },
+  "courier new": { 0x6f: "o" },
+};
+const SQUARE_GLYPHS = new Set(["▪", "■", "◾", "◼", "⬛", "▫", "◽", "▮"]);
+function bulletGlyph(font: string, glyph: string): { glyph: string; square: boolean } {
+  const code = glyph.codePointAt(0) ?? 0;
+  const table = BULLET_GLYPHS[font.toLowerCase().trim()];
+  const shown =
+    table && (code & 0xff) in table && (code >= 0xf000 || code < 0x100)
+      ? table[code & 0xff]
+      : code >= 0xe000 && code <= 0xf8ff
+        ? "•"
+        : glyph;
+  return { glyph: shown, square: SQUARE_GLYPHS.has(shown) };
+}
 
 /**
  * Very common in client forms: a bulleted list whose bullet glyph is ☐
@@ -889,9 +927,9 @@ function loadBulletBoxes(zip: PizZip): BulletBoxes {
   const xml = zip.file("word/numbering.xml")?.asText();
   if (!xml) return out;
 
-  const byAbstract = new Map<string, Map<string, { checked: boolean; glyph: string }>>();
+  const byAbstract = new Map<string, Map<string, BulletGlyph>>();
   for (const abs of xml.matchAll(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g)) {
-    const levels = new Map<string, { checked: boolean; glyph: string }>();
+    const levels = new Map<string, BulletGlyph>();
     for (const lvl of abs[2].matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvl>/g)) {
       const body = lvl[2];
       if (!/<w:numFmt\b[^>]*w:val="bullet"/.test(body)) continue;
@@ -904,7 +942,8 @@ function loadBulletBoxes(zip: PizZip): BulletBoxes {
         const code = glyph.codePointAt(0) ?? 0;
         if (code >= 0xf000 && code <= 0xf0ff) checked = symbolState(font, code);
       }
-      if (checked !== null) levels.set(lvl[1], { checked, glyph });
+      if (checked !== null) levels.set(lvl[1], { checked, glyph, square: false });
+      else levels.set(lvl[1], { checked: null, ...bulletGlyph(font, glyph) });
     }
     if (levels.size) byAbstract.set(abs[1], levels);
   }
@@ -940,12 +979,24 @@ function detectBulletBoxes(xml: string, boxes: BulletBoxes): Span[] {
     // more bullet) and the tag becomes the paragraph's first run
     const rest = pPr.slice((numPrM.index ?? 0) + numPrM[0].length, pPr.length - "</w:pPr>".length);
     const markRPr = pPr.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? "";
+    // ☐ bullets are checkboxes; square bullets (▪) are used the same way in
+    // many client forms, so they are suggested too; any other bullet (• ➢)
+    // is offered but left alone unless the user picks a type
+    const suggested: CandidateType =
+      box.checked === null
+        ? box.square
+          ? "checkbox"
+          : "ignore"
+        : box.checked
+          ? "checkboxChecked"
+          : "checkbox";
+    const what = box.checked !== null ? "box" : box.square ? "square" : "bullet";
     spans.push({
       start: numPrStart,
       end: pPrEnd,
       kind: "bullet",
-      suggested: box.checked ? "checkboxChecked" : "checkbox",
-      label: `List bullet ${box.glyph} (box)`,
+      suggested,
+      label: `List bullet ${box.glyph} (${what})`,
       text: box.glyph,
       strong: true,
       replace: (markerXml) => `${rest}</w:pPr>${markerRun(markRPr, markerXml)}`,
@@ -1163,7 +1214,7 @@ function plainRegex(form: EsignTokenForm | "text", raw: string, norm: string): R
     return new RegExp(`(?<![A-Za-z0-9])${relaxed}(?![A-Za-z0-9])`, "g");
   }
   const words = raw.trim().split(/\s+/).map(escapeRegExp).join("\\s+");
-  return new RegExp(`(?<![A-Za-z0-9])${words}(?![A-Za-z0-9])`, "gi");
+  return new RegExp(`(?<![A-Za-z0-9])${words}(?![A-Za-z0-9])`, "g");
 }
 
 function replaceKeysInParagraph(paragraph: string, rules: TextRule[]): string {

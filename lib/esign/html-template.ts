@@ -572,14 +572,31 @@ export function hasMappingFor(raw: string, mappings: Record<string, string>): bo
   return findMapping(raw, normalizeKey(raw), mappings) !== undefined;
 }
 
+/**
+ * Which form a raw token / mapping key is written in:
+ *   <<KEY>> · «KEY»  → bracket      @KEY → at
+ *   KEY (caps only)  → bare         anything else ("Student Name") → plain
+ */
+export function formOfRaw(raw: string): EsignTokenForm {
+  const t = raw.trim();
+  if (/^(?:<<|&lt;&lt;|«).*(?:>>|&gt;&gt;|»)$/i.test(t)) return "bracket";
+  if (/^@[A-Za-z0-9_]+$/.test(t)) return "at";
+  if (/^[A-Z][A-Z0-9_]*$/.test(t)) return "bare";
+  return "plain";
+}
+
 function findMapping(
   raw: string,
   norm: string,
   mappings: Record<string, string>,
 ): string | undefined {
   if (mappings[raw]) return mappings[raw];
+  // Plain text is matched by its exact spelling: a mapping for
+  // "Guardian Name" must not touch "GUARDIAN NAME" (and the other way
+  // round). Only key-shaped forms (<<KEY>>, @KEY, KEY) share a mapping.
+  if (formOfRaw(raw) === "plain") return undefined;
   const hit = Object.keys(mappings).find(
-    (k) => mappings[k] && normalizeKey(k) === norm,
+    (k) => mappings[k] && formOfRaw(k) !== "plain" && normalizeKey(k) === norm,
   );
   return hit ? mappings[hit] : undefined;
 }
@@ -810,7 +827,9 @@ function regexForMappingKey(key: string): RegExp {
     return bracketRegex(normalizeKey(trimmed));
   }
   if (/^@[A-Za-z0-9_]+$/.test(trimmed)) return atRegex(normalizeKey(trimmed));
-  return freeTextRegex(trimmed);
+  if (formOfRaw(trimmed) === "bare") return bareRegex(normalizeKey(trimmed));
+  // free text: exact spelling ("Guardian Name" is not "GUARDIAN NAME")
+  return plainHtmlRegex(trimmed);
 }
 
 /**
@@ -845,26 +864,17 @@ export function keyTargetSpecs(
   // A mapping key only duplicates a discovered token when it is the same
   // *form* — "student name" (free text) must still be searched for even
   // though <<STUDENTNAME>> was found in bracket form.
-  const discovered = new Set(analysis.tokens.map((t) => `${t.form}:${t.norm}`));
-  const formOfMappingKey = (k: string): EsignTokenForm | "text" => {
-    const t = k.trim();
-    if (/^(?:<<|&lt;&lt;|«).*(?:>>|&gt;&gt;|»)$/i.test(t)) return "bracket";
-    if (/^@[A-Za-z0-9_]+$/.test(t)) return "at";
-    if (/^[A-Z][A-Z0-9_]{3,}$/.test(t)) return "bare";
-    return "text";
-  };
+  // (plain text is one spelling = one token, so it is keyed by the text)
+  const specKey = (form: EsignTokenForm, raw: string) =>
+    form === "plain" ? `plain:${raw.trim()}` : `${form}:${normalizeKey(raw)}`;
+  const discovered = new Set(analysis.tokens.map((t) => specKey(t.form, t.raw)));
   const extra: KeyTargetSpec[] = Object.keys(mappings)
-    .filter(
-      (k) =>
-        k.trim() &&
-        mappings[k] &&
-        !discovered.has(`${formOfMappingKey(k)}:${normalizeKey(k)}`),
-    )
+    .filter((k) => k.trim() && mappings[k] && !discovered.has(specKey(formOfRaw(k), k)))
     .sort((a, b) => b.length - a.length)
     .map((k) => ({
       raw: k,
       norm: normalizeKey(k),
-      form: formOfMappingKey(k),
+      form: formOfRaw(k),
       fromMapping: true,
     }));
 
