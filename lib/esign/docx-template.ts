@@ -390,13 +390,16 @@ function detectRunCharacters(xml: string): Span[] {
       const symFont = sym[0].match(/w:font="([^"]+)"/)?.[1] ?? "";
       const code = parseInt(sym[0].match(/w:char="([^"]+)"/)?.[1] ?? "", 16);
       if (Number.isNaN(code)) continue;
+      if ((code & 0xff) === 0x20) continue; // a symbol-font "space" is nothing
       const state = symbolState(symFont, code);
       const start = runStart + (sym.index ?? 0);
       spans.push({
         start,
         end: start + sym[0].length,
         kind: "symbol",
-        suggested: state === null ? null : state ? "checkboxChecked" : "checkbox",
+        // unknown symbol glyphs (bullets, arrows …) default to "ignore" so
+        // they do not block the build; the user can still pick a type
+        suggested: state === null ? "ignore" : state ? "checkboxChecked" : "checkbox",
         label:
           state === null
             ? `${symFont} symbol ${code.toString(16).toUpperCase()}`
@@ -466,10 +469,13 @@ function detectRunCharacters(xml: string): Span[] {
         } else {
           const code = ch.codePointAt(0) ?? 0;
           if (code < 0xf000 || code > 0xf0ff) continue;
+          if ((code & 0xff) === 0x20) continue; // symbol-font "space"
           const state = symbolState(font, code);
           spans.push({
             start, end, kind: "symbol",
-            suggested: state === null ? null : state ? "checkboxChecked" : "checkbox",
+            // unknown symbol glyphs (bullets, arrows …) default to "ignore" so
+        // they do not block the build; the user can still pick a type
+        suggested: state === null ? "ignore" : state ? "checkboxChecked" : "checkbox",
             label:
               state === null
                 ? `${font || "Symbol"} character ${code.toString(16).toUpperCase()}`
@@ -483,119 +489,194 @@ function detectRunCharacters(xml: string): Span[] {
   return spans;
 }
 
+type GraphicInfo = Pick<
+  Span,
+  "kind" | "suggested" | "label" | "text" | "thumbnail" | "widthIn" | "heightIn"
+>;
+
+/** What a <w:drawing> / <w:pict> / <w:object> is, and what it should become. */
+function classifyGraphic(
+  el: string,
+  zip: PizZip,
+  rels: Map<string, string>,
+): GraphicInfo {
+  let widthIn: number | undefined;
+  let heightIn: number | undefined;
+  const extent = el.match(/<wp:extent\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/);
+  if (extent) {
+    widthIn = +(parseInt(extent[1], 10) / EMU_PER_INCH).toFixed(2);
+    heightIn = +(parseInt(extent[2], 10) / EMU_PER_INCH).toFixed(2);
+  } else {
+    const w = el.match(/width:\s*([\d.]+)(pt|in|px)/);
+    const h = el.match(/height:\s*([\d.]+)(pt|in|px)/);
+    const toIn = (v: string, u: string) =>
+      +(parseFloat(v) / (u === "pt" ? 72 : u === "px" ? 96 : 1)).toFixed(2);
+    if (w) widthIn = toIn(w[1], w[2]);
+    if (h) heightIn = toIn(h[1], h[2]);
+  }
+  const size =
+    widthIn !== undefined && heightIn !== undefined ? ` ${widthIn}×${heightIn} in` : "";
+  const descr = el.match(/\bdescr="([^"]*)"/)?.[1]?.trim();
+  const small =
+    widthIn !== undefined && heightIn !== undefined && widthIn <= 0.35 && heightIn <= 0.35;
+  const smallSquare =
+    widthIn !== undefined &&
+    heightIn !== undefined &&
+    heightIn > 0 &&
+    widthIn <= 0.45 &&
+    heightIn <= 0.45 &&
+    widthIn / heightIn > 0.7 &&
+    widthIn / heightIn < 1.4;
+
+  const hasText = /<wps:txbx>|<v:textbox\b/.test(el);
+  const hasPic = /<pic:pic\b|<v:imagedata\b|<a:blip\b/.test(el);
+
+  if (hasText) {
+    const text = paragraphText(el).replace(/\s+/g, " ").trim();
+    // a text box that holds a picture (a logo in a box) is layout too
+    if (hasPic) {
+      return {
+        kind: "shape",
+        suggested: "ignore",
+        label: `Text box with a picture${size} — kept as it is`,
+        text,
+        widthIn,
+        heightIn,
+      };
+    }
+    // a text box that already holds text is layout (a heading, a note, a
+    // sentence with keys) — turning it into a tag would delete that text
+    if (text.length > 0) {
+      return {
+        kind: "shape",
+        suggested: "ignore",
+        label: `Text box with text${size} — kept as it is`,
+        text,
+        widthIn,
+        heightIn,
+      };
+    }
+    return {
+      kind: "shape",
+      suggested: "textbox",
+      label: `Empty text box${size}`,
+      text,
+      widthIn,
+      heightIn,
+    };
+  }
+
+  if (hasPic) {
+    const rId =
+      el.match(/<a:blip\b[^>]*\br:embed="([^"]+)"/)?.[1] ??
+      el.match(/<v:imagedata\b[^>]*\br:id="([^"]+)"/)?.[1];
+    const { thumbnail, ext } = thumbnailFor(zip, rels, rId);
+    let suggested: CandidateType | null = null;
+    let hint = "";
+    if (widthIn !== undefined && heightIn !== undefined && heightIn > 0) {
+      const ratio = widthIn / heightIn;
+      if (smallSquare || small) {
+        suggested = "checkbox";
+      } else if (heightIn <= 0.35 && ratio >= 4) {
+        suggested = "textbox"; // a thin line-like picture
+      } else if (widthIn >= 1 && heightIn >= 0.5) {
+        suggested = "ignore"; // logo / photo
+        hint = " — looks like a logo or photo";
+      }
+    }
+    // the alt text the client typed is the best hint we have
+    if (descr) {
+      if (/\b(checked|ticked|tick)\b/i.test(descr) && suggested !== "textbox") {
+        suggested = "checkboxChecked";
+      } else if (/check\s?box|\bbox\b/i.test(descr) && suggested !== "textbox") {
+        suggested = "checkbox";
+      } else if (/text\s?box|input|field|line|blank/i.test(descr)) {
+        suggested = "textbox";
+      }
+    }
+    return {
+      kind: "image",
+      suggested,
+      label: `Picture${ext ? ` (${ext})` : ""}${size}${descr ? ` — ${descr}` : hint}`,
+      thumbnail,
+      text: descr,
+      widthIn,
+      heightIn,
+    };
+  }
+
+  // a drawn line (Insert → Shapes → Line, or VML <v:line>) is a blank to
+  // write on → textbox
+  const isLine =
+    /prst="(?:line|straightConnector1|bentConnector\d)"/.test(el) ||
+    /<v:line\b/.test(el) ||
+    (heightIn !== undefined && heightIn <= 0.05 && (widthIn ?? 0) >= 0.3);
+  if (isLine) {
+    return {
+      kind: "shape",
+      suggested: "textbox",
+      label: `Line shape${size}${descr ? ` — ${descr}` : ""}`,
+      text: descr,
+      widthIn,
+      heightIn,
+    };
+  }
+
+  // drawn shape without text (rectangle etc.)
+  let suggested: CandidateType | null = null;
+  if (smallSquare || small) {
+    suggested = "checkbox"; // a little drawn box
+  } else if (widthIn !== undefined && heightIn !== undefined && heightIn > 0) {
+    if (widthIn / heightIn >= 2.5) suggested = "textbox";
+  }
+  return {
+    kind: "shape",
+    suggested,
+    label: `Drawn shape${size}${descr ? ` — ${descr}` : ""}`,
+    text: descr,
+    widthIn,
+    heightIn,
+  };
+}
+
 function detectGraphics(
   xml: string,
   zip: PizZip,
   rels: Map<string, string>,
 ): Span[] {
   const spans: Span[] = [];
+  const replace = (markerXml: string) => `<w:t xml:space="preserve">${markerXml}</w:t>`;
+
+  // Word writes every modern shape twice: <mc:AlternateContent> holds the
+  // real <w:drawing> in <mc:Choice> and a VML copy in <mc:Fallback>. Treat
+  // the whole block as ONE candidate (classified from the Choice), so it is
+  // listed once and replaced once.
+  for (const m of xml.matchAll(/<mc:AlternateContent>[\s\S]*?<\/mc:AlternateContent>/g)) {
+    const start = m.index ?? 0;
+    const block = m[0];
+    const choice = block.match(/<mc:Choice\b[^>]*>([\s\S]*?)<\/mc:Choice>/)?.[1] ?? block;
+    const inner =
+      choice.match(/<w:drawing>[\s\S]*?<\/w:drawing>|<w:pict(?:\s[^>]*)?>[\s\S]*?<\/w:pict>/)?.[0] ??
+      choice;
+    spans.push({
+      start,
+      end: start + block.length,
+      ...classifyGraphic(inner, zip, rels),
+      strong: true,
+      replace,
+    });
+  }
+
   const re =
     /<w:drawing>[\s\S]*?<\/w:drawing>|<w:pict(?:\s[^>]*)?>[\s\S]*?<\/w:pict>|<w:object(?:\s[^>]*)?>[\s\S]*?<\/w:object>/g;
   for (const m of xml.matchAll(re)) {
     const start = m.index ?? 0;
-    const el = m[0];
-    const end = start + el.length;
-
-    let widthIn: number | undefined;
-    let heightIn: number | undefined;
-    const extent = el.match(/<wp:extent\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/);
-    if (extent) {
-      widthIn = +(parseInt(extent[1], 10) / EMU_PER_INCH).toFixed(2);
-      heightIn = +(parseInt(extent[2], 10) / EMU_PER_INCH).toFixed(2);
-    } else {
-      const w = el.match(/width:\s*([\d.]+)(pt|in|px)/);
-      const h = el.match(/height:\s*([\d.]+)(pt|in|px)/);
-      const toIn = (v: string, u: string) =>
-        +(parseFloat(v) / (u === "pt" ? 72 : u === "px" ? 96 : 1)).toFixed(2);
-      if (w) widthIn = toIn(w[1], w[2]);
-      if (h) heightIn = toIn(h[1], h[2]);
-    }
-    const size =
-      widthIn !== undefined && heightIn !== undefined
-        ? ` ${widthIn}×${heightIn} in`
-        : "";
-    const descr = el.match(/\bdescr="([^"]*)"/)?.[1]?.trim();
-    const replace = (markerXml: string) =>
-      `<w:t xml:space="preserve">${markerXml}</w:t>`;
-
-    const hasText = /<wps:txbx>|<v:textbox\b/.test(el);
-    const hasPic = /<pic:pic\b|<v:imagedata\b|<a:blip\b/.test(el);
-
-    if (hasText) {
-      const text = paragraphText(el).trim();
-      spans.push({
-        start, end, kind: "shape", suggested: "textbox",
-        label: `Text box shape${size}`, text, widthIn, heightIn,
-        strong: true, replace,
-      });
-      continue;
-    }
-
-    if (hasPic) {
-      const rId =
-        el.match(/<a:blip\b[^>]*\br:embed="([^"]+)"/)?.[1] ??
-        el.match(/<v:imagedata\b[^>]*\br:id="([^"]+)"/)?.[1];
-      const { thumbnail, ext } = thumbnailFor(zip, rels, rId);
-      let suggested: CandidateType | null = null;
-      let hint = "";
-      if (widthIn !== undefined && heightIn !== undefined && heightIn > 0) {
-        const ratio = widthIn / heightIn;
-        const smallSquare =
-          widthIn <= 0.45 && heightIn <= 0.45 && ratio > 0.7 && ratio < 1.4;
-        if (smallSquare) {
-          suggested = "checkbox";
-        } else if (heightIn <= 0.35 && ratio >= 4) {
-          suggested = "textbox"; // a thin line-like picture
-        } else if (widthIn >= 1 && heightIn >= 0.5) {
-          suggested = "ignore"; // logo / photo
-          hint = " — looks like a logo or photo";
-        }
-      }
-      // the alt text the client typed is the best hint we have
-      if (descr) {
-        if (/\b(checked|ticked|tick)\b/i.test(descr) && suggested !== "textbox") {
-          suggested = "checkboxChecked";
-        } else if (/check\s?box|\bbox\b/i.test(descr) && suggested !== "textbox") {
-          suggested = "checkbox";
-        } else if (/text\s?box|input|field|line|blank/i.test(descr)) {
-          suggested = "textbox";
-        }
-      }
-      spans.push({
-        start, end, kind: "image", suggested,
-        label: `Picture${ext ? ` (${ext})` : ""}${size}${descr ? ` — ${descr}` : hint}`,
-        thumbnail, widthIn, heightIn, text: descr, strong: true, replace,
-      });
-      continue;
-    }
-
-    // a drawn line (Insert → Shapes → Line, or VML <v:line>) is a blank to
-    // write on → textbox
-    const isLine =
-      /prst="(?:line|straightConnector1|bentConnector\d)"/.test(el) ||
-      /<v:line\b/.test(el) ||
-      (heightIn !== undefined && heightIn <= 0.05 && (widthIn ?? 0) >= 0.3);
-    if (isLine) {
-      spans.push({
-        start, end, kind: "shape", suggested: "textbox",
-        label: `Line shape${size}${descr ? ` — ${descr}` : ""}`,
-        widthIn, heightIn, text: descr, strong: true, replace,
-      });
-      continue;
-    }
-
-    // drawn shape without text (rectangle etc.)
-    let suggested: CandidateType | null = null;
-    if (widthIn !== undefined && heightIn !== undefined && heightIn > 0) {
-      const ratio = widthIn / heightIn;
-      if (widthIn <= 0.45 && heightIn <= 0.45 && ratio > 0.7 && ratio < 1.4) {
-        suggested = "checkbox";
-      } else if (ratio >= 2.5) suggested = "textbox";
-    }
     spans.push({
-      start, end, kind: "shape", suggested,
-      label: `Drawn shape${size}${descr ? ` — ${descr}` : ""}`,
-      widthIn, heightIn, text: descr, strong: true, replace,
+      start,
+      end: start + m[0].length,
+      ...classifyGraphic(m[0], zip, rels),
+      strong: true,
+      replace,
     });
   }
   return spans;
@@ -724,7 +805,9 @@ function detectLines(xml: string): Span[] {
     const text = paragraphText(body);
     const hasTab = /<w:tab\/>/.test(body);
     if (!/^[\s _]*$/.test(text)) continue;
-    if (!hasTab && text.replace(/_/g, "").length < 2) continue; // a single underlined space is nothing
+    // a few underlined spaces are padding around a key ("__GRADE__"), not a
+    // field; a real blank is a run of 5+ spaces or a tab
+    if (!hasTab && text.replace(/_/g, "").length < 5) continue;
     underlined.push({
       start: runStart,
       end: runStart + runXml.length,
