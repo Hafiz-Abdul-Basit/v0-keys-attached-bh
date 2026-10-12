@@ -26,3 +26,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 public/client-test/
+
+# npm lock file (this project uses pnpm-lock.yaml)
+package-lock.json
