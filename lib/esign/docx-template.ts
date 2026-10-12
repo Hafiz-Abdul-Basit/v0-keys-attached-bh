@@ -44,6 +44,7 @@ import {
   type DocxAnalysis,
   type DocxAssignment,
   type DocxCandidate,
+  type DocxTemplatePart,
 } from "./docx-shared";
 
 export { assignControlIds };
@@ -53,6 +54,7 @@ export type {
   DocxAnalysis,
   DocxAssignment,
   DocxCandidate,
+  DocxTemplatePart,
 };
 
 /* ───────────────────────────── types ───────────────────────────── */
@@ -417,27 +419,8 @@ function detectRunCharacters(xml: string): Span[] {
       if (!raw) continue;
       const textStart = runStart + (wt.index ?? 0) + wt[0].indexOf(">") + 1;
 
-      // tags the team typed in Word: <c> <cc> <t> (unnumbered) or <c7> <t2>
-      // — in the XML they are entity-escaped: &lt;c7&gt;
-      for (const m of raw.matchAll(/&lt;\s*([ct])\s*(\d*)\s*(c?)\s*&gt;/gi)) {
-        const letter = m[1].toLowerCase() as "c" | "t";
-        const digits = m[2];
-        const checked = letter === "c" && m[3] !== "";
-        const typed = `<${letter}${digits}${checked ? "c" : ""}>`;
-        const start = textStart + (m.index ?? 0);
-        spans.push({
-          start,
-          end: start + m[0].length,
-          kind: "marker",
-          suggested: letter === "t" ? "textbox" : checked ? "checkboxChecked" : "checkbox",
-          label: digits ? `Typed ${typed} (numbered)` : `Typed ${typed} tag`,
-          text: typed,
-          fixedId: digits ? `${letter}${digits}` : undefined,
-          strong: true,
-          inText: true,
-          replace: (markerXml) => markerXml,
-        });
-      }
+      // typed tags (<c7>, <t>) are found per paragraph in detectTypedTags —
+      // Word often splits them over several runs
       const charRe =
         /&#x([0-9a-f]+);|&#(\d+);|[-☐-☒□▢◻❏-❒⬜]|\[\s?[xX✓✔√]\s?\]|\[\s?\]|_{3,}/gi;
       for (const c of raw.matchAll(charRe)) {
@@ -485,6 +468,96 @@ function detectRunCharacters(xml: string): Span[] {
           });
         }
       }
+    }
+  }
+  return spans;
+}
+
+/** decoded text of one <w:t>, with the raw XML offset of every character */
+interface TextPiece {
+  text: string;
+  /** offsets[i] = xml index where decoded char i starts; offsets[len] = end */
+  offsets: number[];
+  /** xml range of the whole <w:t …>…</w:t> element */
+  elStart: number;
+  elEnd: number;
+}
+
+function textPieces(xml: string, base: number): TextPiece[] {
+  const pieces: TextPiece[] = [];
+  for (const m of xml.matchAll(WT_RE)) {
+    const raw = m[2];
+    if (!raw) continue;
+    const elStart = base + (m.index ?? 0);
+    let at = elStart + m[0].indexOf(">") + 1;
+    let text = "";
+    const offsets: number[] = [];
+    for (const tok of raw.match(/&[#a-zA-Z0-9]+;|[\s\S]/g) ?? []) {
+      const ch = tok.length > 1 ? decodeEntities(tok) : tok;
+      for (let k = 0; k < ch.length; k++) offsets.push(at);
+      text += ch;
+      at += tok.length;
+    }
+    offsets.push(at);
+    pieces.push({ text, offsets, elStart, elEnd: elStart + m[0].length });
+  }
+  return pieces;
+}
+
+/**
+ * Tags the team typed in Word: <c> <cc> <t> (unnumbered) or <c7> <t2>.
+ * Word often splits one tag over several runs ("<" | "t3" | ">"), so they
+ * are searched in the paragraph's joined text. A tag spanning runs is
+ * replaced in the first run; the rest of it is removed from the others,
+ * every run (and its formatting) stays in place.
+ */
+function detectTypedTags(xml: string): Span[] {
+  const spans: Span[] = [];
+  for (const pm of xml.matchAll(PARAGRAPH_RE)) {
+    const pieces = textPieces(pm[0], pm.index ?? 0);
+    if (!pieces.length) continue;
+    const joined = pieces.map((p) => p.text).join("");
+    if (!joined.includes("<")) continue;
+    // char index in `joined` → [piece, local index]
+    const locate = (i: number): [number, number] => {
+      let off = 0;
+      for (let k = 0; k < pieces.length; k++) {
+        if (i < off + pieces[k].text.length) return [k, i - off];
+        off += pieces[k].text.length;
+      }
+      const last = pieces.length - 1;
+      return [last, pieces[last].text.length];
+    };
+    for (const m of joined.matchAll(/<\s*([ct])\s*(\d*)\s*(c?)\s*>/gi)) {
+      const letter = m[1].toLowerCase() as "c" | "t";
+      const digits = m[2];
+      const checked = letter === "c" && m[3] !== "";
+      const typed = `<${letter}${digits}${checked ? "c" : ""}>`;
+      const from = m.index ?? 0;
+      const [pa, ia] = locate(from);
+      const [pb, ibLast] = locate(from + m[0].length - 1);
+      const start = pieces[pa].offsets[ia];
+      const end = pieces[pb].offsets[ibLast + 1];
+      // runs in between: keep their XML, drop the tag characters they held
+      let middle = "";
+      if (pb > pa) {
+        const between = xml.slice(pieces[pa].offsets[pieces[pa].text.length], pieces[pb].offsets[0]);
+        middle = between.replace(WT_RE, (el, attrs: string) =>
+          `<w:t${attrs.replace(/\/$/, "")}></w:t>`,
+        );
+      }
+      spans.push({
+        start,
+        end,
+        kind: "marker",
+        suggested: letter === "t" ? "textbox" : checked ? "checkboxChecked" : "checkbox",
+        label: digits ? `Typed ${typed} (numbered)` : `Typed ${typed} tag`,
+        text: typed,
+        fixedId: digits ? `${letter}${digits}` : undefined,
+        strong: true,
+        inText: true,
+        replace: (markerXml) => markerXml + middle,
+      });
     }
   }
   return spans;
@@ -1106,12 +1179,119 @@ function detectSpans(xml: string, zip: PizZip, part: string): Span[] {
     ...detectContentControls(xml),
     ...detectLegacyFields(xml),
     ...detectRunCharacters(xml),
+    ...detectTypedTags(xml),
     ...detectGraphics(xml, zip, rels),
     ...detectLines(xml),
     ...detectBulletBoxes(xml, loadBulletBoxes(zip)),
     ...detectEmptyCells(xml),
   ]);
   return dropKeyPadding(xml, spans);
+}
+
+/* ──────────── templates in one file (English copy, Spanish copy …) ──────────── */
+
+const STOPWORDS: Record<"en" | "es", Set<string>> = {
+  en: new Set(
+    "the and of to will is are for with that this be by on has have from or not their his her each all who when which may student school parent other at absences attendance".split(" "),
+  ),
+  es: new Set(
+    "el la los las de del y que en para por con se una un es su sus al o estudiante escuela padre madre tutor otro otra será cada todos asistencia ausencias escolar".split(" "),
+  ),
+};
+
+function languageCounts(text: string): { en: number; es: number } {
+  const words = text.toLowerCase().match(/[a-záéíóúüñ]+/g) ?? [];
+  let en = 0;
+  let es = 0;
+  for (const w of words) {
+    if (STOPWORDS.en.has(w)) en++;
+    if (STOPWORDS.es.has(w)) es++;
+  }
+  return { en, es };
+}
+
+/** "en" / "es" only when one clearly outweighs the other (a bilingual page → null) */
+function languageOf(counts: { en: number; es: number }): string | null {
+  if (counts.en + counts.es < 8) return null;
+  if (counts.es >= counts.en * 2) return "es";
+  if (counts.en >= counts.es * 2) return "en";
+  return null;
+}
+
+interface TemplateRange extends DocxTemplatePart {
+  start: number;
+  counts: { en: number; es: number };
+  /** first keys of the template, to spot a second copy in the same language */
+  keys: string[];
+}
+
+/**
+ * Split document.xml into templates. The file is first cut at hard breaks
+ * (section break, page break, "page break before"); a piece starts a new
+ * template when its language differs from the current template's, or when
+ * it opens like the current template did (same title / same first keys —
+ * a second copy in the same language). A page 2 in the same language with
+ * different content stays in the same template.
+ */
+function detectTemplates(xml: string): TemplateRange[] {
+  const bodyStart = Math.max(0, xml.indexOf("<w:body>"));
+  const cuts = new Set<number>([bodyStart]);
+  for (const pm of xml.matchAll(PARAGRAPH_RE)) {
+    const start = pm.index ?? 0;
+    const pXml = pm[0];
+    if (/<w:sectPr\b/.test(pXml)) cuts.add(start + pXml.length);
+    if (/<w:pageBreakBefore\b(?![^>]*w:val="(?:0|false)")/.test(pXml)) cuts.add(start);
+    for (const br of pXml.matchAll(/<w:br\b[^>]*w:type="page"[^>]*\/>/g)) {
+      cuts.add(start + (br.index ?? 0));
+    }
+  }
+  const sorted = Array.from(cuts).sort((a, b) => a - b);
+
+  const blocks = sorted.map((start, i) => {
+    const end = sorted[i + 1] ?? xml.length;
+    const lines: string[] = [];
+    for (const pm of xml.slice(start, end).matchAll(PARAGRAPH_RE)) {
+      const t = paragraphText(pm[0]).replace(/\s+/g, " ").trim();
+      if (t) lines.push(t);
+    }
+    // a page break inside a paragraph leaves that paragraph's tail out of
+    // the slice above — good enough for language / title purposes
+    const text = lines.join("\n");
+    const keys = Array.from(text.matchAll(/(?:<<|«)\s*([^<>«»]+?)\s*(?:>>|»)/g), (m) =>
+      normalizeKey(m[1]),
+    ).slice(0, 3);
+    return { start, title: lines[0] ?? "", counts: languageCounts(text), keys };
+  });
+
+  const out: TemplateRange[] = [];
+  for (const b of blocks) {
+    const cur = out[out.length - 1];
+    if (cur) {
+      const blockLang = languageOf(b.counts);
+      const curLang = languageOf(cur.counts);
+      const langSwitch = !!blockLang && !!curLang && blockLang !== curLang;
+      const sameTitle = b.title.length >= 10 && b.title.toLowerCase() === cur.title.toLowerCase();
+      const sameKeys =
+        b.keys.length === 3 && cur.keys.length === 3 && b.keys.every((k, i) => k === cur.keys[i]);
+      if (!langSwitch && !sameTitle && !sameKeys) {
+        cur.counts.en += b.counts.en;
+        cur.counts.es += b.counts.es;
+        if (!cur.title) cur.title = b.title;
+        if (cur.keys.length < 3) cur.keys = [...cur.keys, ...b.keys].slice(0, 3);
+        continue;
+      }
+    }
+    out.push({
+      index: out.length,
+      start: b.start,
+      language: null,
+      title: b.title,
+      counts: { ...b.counts },
+      keys: b.keys,
+    });
+  }
+  for (const t of out) t.language = languageOf(t.counts);
+  return out;
 }
 
 /* ───────────────────────────── analyse ───────────────────────────── */
@@ -1125,6 +1305,7 @@ export function analyzeEsignDocx(
 
   let text = "";
   const candidates: DocxCandidate[] = [];
+  let templates: TemplateRange[] = [];
 
   for (const part of parts) {
     const xml = zip.file(part)?.asText();
@@ -1134,9 +1315,16 @@ export function analyzeEsignDocx(
     const key = partKey(part);
     // controls live in the body only; headers/footers get keys replaced
     // but never checkboxes / textboxes
-    const spans = /document\.xml$/.test(part) ? detectSpans(xml, zip, part) : [];
+    const isBody = /document\.xml$/.test(part);
+    if (isBody) templates = detectTemplates(xml);
+    const spans = isBody ? detectSpans(xml, zip, part) : [];
     spans.forEach((span, i) => {
+      const template = templates.reduce(
+        (found, t) => (t.start <= span.start ? t.index : found),
+        0,
+      );
       candidates.push({
+        template,
         id: `${key}-${i}`,
         part,
         kind: span.kind,
@@ -1156,7 +1344,14 @@ export function analyzeEsignDocx(
     text.replace(/[ \t\r]+/g, " ").replace(/\s*\n\s*/g, "\n").trim(),
     options,
   );
-  return { ...analysis, candidates };
+  const templateParts: DocxTemplatePart[] = templates.length
+    ? templates.map(({ index, language, title }) => ({
+        index,
+        language,
+        title: title.length > 80 ? title.slice(0, 80) + "…" : title,
+      }))
+    : [{ index: 0, language: null, title: "" }];
+  return { ...analysis, candidates, templates: templateParts };
 }
 
 /* ───────────────────── key replacement (run-safe) ───────────────────── */
@@ -1192,6 +1387,20 @@ interface TextRule {
   regex: RegExp;
   replacement: string;
   onHit: () => void;
+  /** skip matches inside a <<…>> (every non-bracket form): "STUDENT NAME"
+   *  must not hit the STUDENTNAME of a <<STUDENTNAME>> already written */
+  outsideKeys: boolean;
+}
+
+/** a whole <<…>> / «…» in the merged paragraph text */
+const KEY_SPAN_TEXT_RE = /(?:<<|«)[^<>«»]*(?:>>|»)/g;
+
+function insideKey(text: string, start: number, end: number): boolean {
+  for (const k of text.matchAll(KEY_SPAN_TEXT_RE)) {
+    const s = k.index ?? 0;
+    if (start < s + k[0].length && end > s) return true;
+  }
+  return false;
 }
 
 function escapeRegExp(s: string): string {
@@ -1237,6 +1446,10 @@ function replaceKeysInParagraph(paragraph: string, rules: TextRule[]): string {
       rule.regex.lastIndex = from;
       const m = rule.regex.exec(merged);
       if (!m) break;
+      if (rule.outsideKeys && insideKey(merged, m.index, m.index + m[0].length)) {
+        from = m.index + 1;
+        continue;
+      }
       splice(segments, m.index, m.index + m[0].length, rule.replacement);
       rule.onHit();
       from = m.index + rule.replacement.length;
@@ -1304,6 +1517,7 @@ export function buildEsignDocx(
       rules.push({
         regex: plainRegex(spec.form, spec.raw, spec.norm),
         replacement,
+        outsideKeys: spec.form !== "bracket",
         onHit: () => {
           stats.keys[statKey] = (stats.keys[statKey] ?? 0) + 1;
         },

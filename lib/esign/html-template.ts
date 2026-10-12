@@ -437,16 +437,12 @@ export function analyzeEsignText(
   for (const m of text.matchAll(TEXT_AT_RE)) {
     addToken(m[0], "at");
   }
-  const bracketNorms = new Set(
-    Array.from(tokens.values())
-      .filter((t) => t.form === "bracket")
-      .map((t) => t.norm),
-  );
   for (const m of text.matchAll(TEXT_BARE_RE)) {
     const norm = normalizeKey(m[0]);
-    // bare words only count when they are a known key and the same key
-    // was not already written in proper <<KEY>> form
-    if (norm.length < 4 || !KEY_BY_NORM.has(norm) || bracketNorms.has(norm)) continue;
+    // bare words only count when they are a known key — also when the same
+    // key is written as <<KEY>> elsewhere (the rewrite never touches the
+    // inside of a <<…>>, so the two forms cannot collide)
+    if (norm.length < 4 || !KEY_BY_NORM.has(norm)) continue;
     addToken(m[0], "bare");
   }
 
@@ -699,6 +695,23 @@ interface RewriteRule {
   /** returns the replacement for the token text (tags are re-attached automatically) */
   render: (match: string) => string;
   onHit?: () => void;
+  /** never match inside a <<…>> — set for every key rule that is not a
+   *  bracket form, so "STUDENT NAME" cannot hit the STUDENTNAME of a
+   *  <<STUDENTNAME>> another rule (or the author) already wrote */
+  outsideKeys?: boolean;
+}
+
+/** a whole <<…>> / &lt;&lt;…&gt;&gt; / «…» in raw HTML (tags may split it) */
+const KEY_SPAN_RE = new RegExp(
+  `${OPEN2}(?:(?!${CLOSE2})[\\s\\S]){0,400}?${CLOSE2}`,
+  "gi",
+);
+
+function keySpans(html: string): [number, number][] {
+  return Array.from(html.matchAll(KEY_SPAN_RE), (m) => [
+    m.index ?? 0,
+    (m.index ?? 0) + m[0].length,
+  ]);
 }
 
 function isInsideTag(chunk: string, offset: number): boolean {
@@ -754,9 +767,12 @@ function applyRules(chunk: string, rules: RewriteRule[]): string {
     if (!rule.regex.test(out)) continue;
     rule.regex.lastIndex = 0;
     const source = out;
+    const keys = rule.outsideKeys ? keySpans(source) : [];
     out = source.replace(rule.regex, (match: string, ...args: unknown[]) => {
       const offset = args[args.length - 2] as number;
       if (isInsideTag(source, offset)) return match;
+      const end = offset + match.length;
+      if (keys.some(([s, e]) => offset < e && end > s)) return match;
       rule.onHit?.();
       return rule.render(match) + tagsInside(match);
     });
@@ -878,17 +894,33 @@ export function keyTargetSpecs(
       fromMapping: true,
     }));
 
-  return [...targets, ...extra];
+  // one list, longest first: a user mapping for "Parent/Guardian Name" must
+  // run before the discovered "Guardian Name" inside it; on a tie the
+  // user's own mapping goes first
+  return [...targets, ...extra].sort(
+    (a, b) =>
+      b.norm.length - a.norm.length ||
+      Number(b.fromMapping) - Number(a.fromMapping) ||
+      FORM_ORDER[a.form === "text" ? "plain" : a.form] -
+        FORM_ORDER[b.form === "text" ? "plain" : b.form],
+  );
 }
 
 function collectKeyTargets(
   analysis: EsignAnalysis,
   mappings: Record<string, string>,
-): { raw: string; norm: string; regex: RegExp; fromMapping: boolean }[] {
+): {
+  raw: string;
+  norm: string;
+  regex: RegExp;
+  fromMapping: boolean;
+  outsideKeys: boolean;
+}[] {
   return keyTargetSpecs(analysis, mappings).map((t) => ({
     raw: t.raw,
     norm: t.norm,
     fromMapping: t.fromMapping,
+    outsideKeys: t.form !== "bracket",
     regex: t.fromMapping
       ? regexForMappingKey(t.raw)
       : regexForToken(t.form as EsignTokenForm, t.norm, t.raw),
@@ -926,6 +958,7 @@ export function transformEsignHtml(
         resolved.kind === "placeholder" ? resolved.key : `"${resolved.text}"`;
       rules.push({
         regex: target.regex,
+        outsideKeys: target.outsideKeys,
         render: () => replacement,
         onHit: () => {
           stats.keys[statKey] = (stats.keys[statKey] ?? 0) + 1;
@@ -1004,6 +1037,7 @@ export function highlightEsignHtml(
             : "es-key-yellow";
     rules.push({
       regex: target.regex,
+      outsideKeys: target.outsideKeys,
       render: (match) =>
         `<mark class="${cls}">${escapeHtml(tokenText(match))}</mark>`,
     });

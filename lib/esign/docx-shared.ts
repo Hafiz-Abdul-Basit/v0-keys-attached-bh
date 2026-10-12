@@ -40,10 +40,26 @@ export interface DocxCandidate {
   text?: string;
   /** kind "marker" with a number typed in Word ("c7"): kept unless renumbering */
   fixedId?: string;
+  /** index into DocxAnalysis.templates: which template (language copy) it is in */
+  template?: number;
+}
+
+/**
+ * One template inside the Word file. Client files often hold the same form
+ * twice — English, then Spanish — separated by a section or page break.
+ */
+export interface DocxTemplatePart {
+  index: number;
+  /** "en" / "es" when the text says so clearly, otherwise null */
+  language: string | null;
+  /** first line of text, e.g. "GISD Elementary Student Attendance Support Plan" */
+  title: string;
 }
 
 export interface DocxAnalysis extends EsignAnalysis {
   candidates: DocxCandidate[];
+  /** always at least one */
+  templates: DocxTemplatePart[];
 }
 
 export interface DocxAssignment {
@@ -56,6 +72,9 @@ export interface AssignOptions {
   /** ignore the numbers typed in Word and number every tag afresh in
    *  document order (c1, c2 … / t1, t2 …) */
   renumber?: boolean;
+  /** true (default): one numbering through the whole file. false: every
+   *  template (English, Spanish …) starts again at c1 / t1 */
+  continueNumbering?: boolean;
 }
 
 /**
@@ -65,6 +84,8 @@ export interface AssignOptions {
  * everything new continues after the highest number of that type.
  * With `renumber`: all tags — typed or detected — are numbered afresh in
  * the order they appear, so a tag inserted in the middle shifts the rest.
+ * With `continueNumbering: false` the same rules apply to each template on
+ * its own, so the Spanish copy starts again at c1 / t1.
  */
 export function assignControlIds(
   candidates: DocxCandidate[],
@@ -72,7 +93,32 @@ export function assignControlIds(
   analysis: Pick<EsignAnalysis, "controls">,
   options: AssignOptions = {},
 ): Record<string, DocxAssignment> {
-  const renumber = options.renumber === true;
+  if (options.continueNumbering === false) {
+    const groups = new Map<number, DocxCandidate[]>();
+    for (const cand of candidates) {
+      const g = cand.template ?? 0;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)?.push(cand);
+    }
+    if (groups.size > 1) {
+      const out: Record<string, DocxAssignment> = {};
+      for (const group of groups.values()) {
+        // typed markers outside the candidate list (headers) belong to no
+        // template, so each template only counts its own typed numbers
+        Object.assign(out, numberInOrder(group, types, [], options.renumber === true));
+      }
+      return out;
+    }
+  }
+  return numberInOrder(candidates, types, analysis.controls, options.renumber === true);
+}
+
+function numberInOrder(
+  candidates: DocxCandidate[],
+  types: Record<string, CandidateType | undefined>,
+  controls: EsignAnalysis["controls"],
+  renumber: boolean,
+): Record<string, DocxAssignment> {
   const fixedNumbers = (letter: "c" | "t") =>
     candidates
       .filter((x) => x.fixedId?.startsWith(letter))
@@ -81,14 +127,14 @@ export function assignControlIds(
     ? 0
     : Math.max(
         0,
-        ...analysis.controls.filter((x) => x.type === "checkbox").map((x) => x.n),
+        ...controls.filter((x) => x.type === "checkbox").map((x) => x.n),
         ...fixedNumbers("c"),
       );
   let t = renumber
     ? 0
     : Math.max(
         0,
-        ...analysis.controls.filter((x) => x.type === "textbox").map((x) => x.n),
+        ...controls.filter((x) => x.type === "textbox").map((x) => x.n),
         ...fixedNumbers("t"),
       );
   const out: Record<string, DocxAssignment> = {};

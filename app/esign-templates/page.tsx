@@ -1,7 +1,7 @@
 "use client";
 import { Toaster, toast } from "react-hot-toast";
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ import {
   Map as MapIcon,
   Search,
   Hash,
+  Languages,
   Table,
 } from "lucide-react";
 import { PlaceholderAutocomplete } from "@/components/Placeholderautocomplete";
@@ -53,6 +54,7 @@ import {
   type CandidateType,
   type DocxAnalysis,
   type DocxCandidate,
+  type DocxTemplatePart,
 } from "@/lib/esign/docx-shared";
 import { convertDocxToHtml } from "@/lib/esign/docx-to-html.client";
 
@@ -100,6 +102,9 @@ interface EsignSettings {
   replaceControls: boolean;
   /** number every tag afresh in document order (ignore numbers typed in Word) */
   renumber: boolean;
+  /** on: one numbering through the whole file; off: every template the
+   *  file holds (English, Spanish …) starts again at c1 / t1 */
+  continueNumbering: boolean;
   templates: EsignTemplates;
 }
 
@@ -126,8 +131,25 @@ const DEFAULT_SETTINGS: EsignSettings = {
   replaceControls: true,
   // number every tag top-to-bottom by default: c1, c2 … / t1, t2 …
   renumber: true,
+  continueNumbering: true,
   templates: { ...DEFAULT_TEMPLATES },
 };
+
+const LANGUAGE_NAMES: Record<string, string> = { en: "English", es: "Spanish" };
+
+function templateName(t: DocxTemplatePart | undefined): string {
+  if (!t) return "Template";
+  return LANGUAGE_NAMES[t.language ?? ""] ?? `Template ${t.index + 1}`;
+}
+
+type ListFilter = "all" | "checkbox" | "textbox" | "ignore" | "undecided";
+const FILTERS: { key: ListFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "undecided", label: "Need decision" },
+  { key: "checkbox", label: "Checkboxes" },
+  { key: "textbox", label: "Textboxes" },
+  { key: "ignore", label: "Ignored" },
+];
 
 const SETTINGS_STORAGE_KEY = "esign-template-settings-v3";
 
@@ -704,6 +726,7 @@ export default function EsignTemplatesPage() {
     setProcessingStep("mapping checkboxes, textboxes and keys in Word");
     const assignments = assignControlIds(item.candidates, item.types, item.analysis, {
       renumber: settings.renumber,
+      continueNumbering: settings.continueNumbering,
     });
     const fd = new FormData();
     fd.append("file", item.file);
@@ -731,8 +754,11 @@ export default function EsignTemplatesPage() {
       html,
       htmlAnalysis,
       {
-        mappings: activeMappings,
-        exclude: excluded,
+        // keys were already replaced in the Word file (step 1); here only the
+        // <<KEY>> output format is applied, so a text mapping such as
+        // "Name" → "Student Name" is never applied a second time
+        mappings: {},
+        exclude: htmlAnalysis.tokens.filter((t) => t.form !== "bracket").map((t) => t.raw),
         keyOutput: settings.keyOutput,
         replaceKeys: settings.replaceKeys,
         replaceControls: settings.replaceControls,
@@ -1547,6 +1573,10 @@ export default function EsignTemplatesPage() {
                           onBulk={(mode) => setAllCandidateTypes(selectedIndex, mode)}
                           renumber={settings.renumber}
                           onRenumberChange={(v) => setSettings((s) => ({ ...s, renumber: v }))}
+                          continueNumbering={settings.continueNumbering}
+                          onContinueNumberingChange={(v) =>
+                            setSettings((s) => ({ ...s, continueNumbering: v }))
+                          }
                           onInsertTag={handleInsertTag}
                           onUndoInsert={handleUndoInsert}
                           canUndo={!!current.previousFiles?.length}
@@ -1703,6 +1733,8 @@ function ControlsPanel({
   onBulk,
   renumber,
   onRenumberChange,
+  continueNumbering,
+  onContinueNumberingChange,
   onInsertTag,
   onUndoInsert,
   canUndo,
@@ -1712,6 +1744,8 @@ function ControlsPanel({
   onBulk: (mode: BulkMode) => void;
   renumber: boolean;
   onRenumberChange: (v: boolean) => void;
+  continueNumbering: boolean;
+  onContinueNumberingChange: (v: boolean) => void;
   onInsertTag: (
     afterText: string,
     type: "checkbox" | "checkboxChecked" | "textbox",
@@ -1734,7 +1768,11 @@ function ControlsPanel({
   const tagHits = tagText.trim()
     ? (docText.match(new RegExp(tagText.trim().split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi")) ?? []).length
     : 0;
-  const assignments = assignControlIds(candidates, types, analysis, { renumber });
+  const assignments = assignControlIds(candidates, types, analysis, {
+    renumber,
+    continueNumbering,
+  });
+  const templateParts = file.kind === "docx" ? (file.analysis as DocxAnalysis).templates ?? [] : [];
   const typedCount = candidates.filter((c) => c.kind === "marker").length;
   const undecided = candidates.filter(
     (c) => c.suggested === null && types[c.id] === undefined,
@@ -1743,17 +1781,28 @@ function ControlsPanel({
     (c) => (types[c.id] ?? c.suggested ?? "ignore") !== "ignore",
   ).length;
   const { checkboxes, textboxes, duplicateIds, missingNumbers } = analysis;
+  // each template numbered on its own: c1 in English and c1 in Spanish is intended
+  const perTemplate = templateParts.length > 1 && !continueNumbering;
   const hasWarnings =
-    duplicateIds.length > 0 ||
+    (duplicateIds.length > 0 && !perTemplate) ||
     missingNumbers.checkbox.length > 0 ||
     missingNumbers.textbox.length > 0;
 
+  const typeOf = (c: DocxCandidate) => types[c.id] ?? c.suggested ?? "ignore";
+  const checkboxCount = candidates.filter((c) => typeOf(c).startsWith("checkbox")).length;
+  const textboxCount = candidates.filter((c) => typeOf(c) === "textbox").length;
+
   // search across label, context text, kind, chosen type and marker id
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<ListFilter>("all");
   const q = search.trim().toLowerCase();
   const visible = candidates.filter((c) => {
+    const type = typeOf(c);
+    if (filter === "checkbox" && !type.startsWith("checkbox")) return false;
+    if (filter === "textbox" && type !== "textbox") return false;
+    if (filter === "ignore" && type !== "ignore") return false;
+    if (filter === "undecided" && !(c.suggested === null && types[c.id] === undefined)) return false;
     if (!q) return true;
-    const type = types[c.id] ?? c.suggested ?? "ignore";
     const marker = type === "ignore" ? "" : `${assignments[c.id].id}${type === "checkboxChecked" ? "c" : ""}`;
     return [c.label, c.context, c.kind, TYPE_LABELS[type], marker, c.text ?? ""]
       .join(" ")
@@ -1762,47 +1811,48 @@ function ControlsPanel({
   });
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <p className="text-xs text-gray-500 truncate" title={file.file.name}>
         <span className="font-mono">{file.file.name}</span>
       </p>
 
-      {file.kind === "docx" && candidates.length > 0 && (
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search controls… (e.g. lunch, c3, textbox, picture)"
-            className="pl-9 h-9 text-sm"
-          />
-          {q && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
-              {visible.length}/{candidates.length}
-            </span>
-          )}
-        </div>
-      )}
-
       {file.kind === "docx" && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="space-y-4">
+          {/* ── 1. what was found ── */}
+          <div className="rounded-lg border p-3 space-y-3">
             <h4 className="font-medium text-sm flex items-center gap-2">
               <Wand2 className="h-4 w-4 text-sky-600" />
               Found in the Word file
               <Badge variant="outline" className="text-xs">
                 {candidates.length}
               </Badge>
-              {undecided > 0 && (
-                <Badge className="text-xs bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-100">
-                  {undecided} need your decision
-                </Badge>
-              )}
             </h4>
-            <div className="flex items-center gap-1">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-md bg-sky-50 border border-sky-100 py-1.5">
+                <div className="text-lg font-semibold text-sky-800">{checkboxCount}</div>
+                <div className="text-[11px] text-sky-700">checkboxes</div>
+              </div>
+              <div className="rounded-md bg-violet-50 border border-violet-100 py-1.5">
+                <div className="text-lg font-semibold text-violet-800">{textboxCount}</div>
+                <div className="text-[11px] text-violet-700">textboxes</div>
+              </div>
+              <div
+                className={`rounded-md border py-1.5 ${undecided ? "bg-orange-50 border-orange-200" : "bg-gray-50 border-gray-100"}`}
+              >
+                <div
+                  className={`text-lg font-semibold ${undecided ? "text-orange-700" : "text-gray-600"}`}
+                >
+                  {undecided || candidates.length - assigned}
+                </div>
+                <div className={`text-[11px] ${undecided ? "text-orange-700" : "text-gray-500"}`}>
+                  {undecided ? "need your decision" : "ignored"}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
               <Button
                 size="sm"
-                variant="ghost"
+                variant="outline"
                 className="h-7 text-xs"
                 onClick={() => onBulk("suggested")}
                 disabled={!candidates.length}
@@ -1821,6 +1871,81 @@ function ControlsPanel({
             </div>
           </div>
 
+          {/* ── 2. numbering ── */}
+          <div className="rounded-lg border p-3 space-y-2">
+            <h4 className="font-medium text-sm flex items-center gap-2">
+              <Hash className="h-4 w-4 text-sky-600" />
+              Numbering
+            </h4>
+            <label className="flex items-start gap-2 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={renumber}
+                onChange={(e) => onRenumberChange(e.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>
+                <span className="font-medium">Number top to bottom</span>
+                <span className="block text-gray-500">
+                  {renumber
+                    ? "c1, c2 … / t1, t2 … in the order they appear."
+                    : `Numbers typed in Word${typedCount ? ` (${typedCount} tags)` : ""} are kept; new ones continue after them.`}
+                </span>
+              </span>
+            </label>
+            <label
+              className={`flex items-start gap-2 text-xs ${templateParts.length > 1 ? "cursor-pointer" : "opacity-60"}`}
+            >
+              <input
+                type="checkbox"
+                checked={continueNumbering}
+                disabled={templateParts.length < 2}
+                onChange={(e) => onContinueNumberingChange(e.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span className="min-w-0">
+                <span className="font-medium">Continue numbering across templates</span>
+                <span className="block text-gray-500">
+                  {templateParts.length < 2
+                    ? "This file has one template, so there is nothing to split."
+                    : continueNumbering
+                      ? "One numbering through the whole file."
+                      : "Each template starts again at c1 / t1."}
+                </span>
+              </span>
+            </label>
+            {templateParts.length > 1 && (
+              <div className="flex gap-1.5 flex-wrap pt-1">
+                {templateParts.map((t) => {
+                  const ids = candidates
+                    .filter((c) => (c.template ?? 0) === t.index)
+                    .map((c) => assignments[c.id]?.id)
+                    .filter(Boolean);
+                  const range = (letter: string) => {
+                    const ns = ids.filter((id) => id.startsWith(letter)).map((id) => +id.slice(1));
+                    return ns.length
+                      ? `${letter}${Math.min(...ns)}–${letter}${Math.max(...ns)}`
+                      : null;
+                  };
+                  return (
+                    <span
+                      key={t.index}
+                      title={t.title}
+                      className="inline-flex items-center gap-1 rounded-full border bg-gray-50 px-2 py-0.5 text-[11px]"
+                    >
+                      <Languages className="h-3 w-3 text-gray-500" />
+                      <span className="font-medium">{templateName(t)}</span>
+                      <span className="font-mono text-gray-500">
+                        {[range("c"), range("t")].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── 3. bulk choices that only some files need ── */}
           {candidates.some(isPlainBullet) && (
             <div className="p-2.5 rounded-lg border border-amber-200 bg-amber-50 text-xs space-y-1.5">
               <div className="font-medium">
@@ -1867,115 +1992,37 @@ function ControlsPanel({
             </div>
           )}
 
-          <label className="flex items-start gap-2 p-2.5 rounded-lg border border-sky-200 bg-sky-50 text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              checked={renumber}
-              onChange={(e) => onRenumberChange(e.target.checked)}
-              className="mt-0.5 h-4 w-4"
-            />
-            <span>
-              <span className="font-medium">Renumber all tags in document order</span>
-              <span className="block text-gray-600 mt-0.5">
-                Off: tags typed in Word ({typedCount}) keep their numbers, new ones continue
-                after them. On: everything is numbered afresh top to bottom (c1, c2 … / t1,
-                t2 …), so a tag added in the middle shifts the ones after it. Type{" "}
-                <span className="font-mono">&lt;c&gt;</span>,{" "}
-                <span className="font-mono">&lt;cc&gt;</span> (checked) or{" "}
-                <span className="font-mono">&lt;t&gt;</span> in Word to add one without
-                choosing a number.
-              </span>
-            </span>
-          </label>
-
-          {/* add a tag from here, without opening Word */}
-          <div className="p-3 rounded-lg border border-violet-200 bg-violet-50 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <h4 className="font-medium text-sm flex items-center gap-2">
-                <Plus className="h-4 w-4 text-violet-700" />
-                Add a tag yourself
-              </h4>
-              {canUndo && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  disabled={tagBusy}
-                  onClick={() => {
-                    setTagBusy(true);
-                    onUndoInsert().finally(() => setTagBusy(false));
-                  }}
-                >
-                  Undo last added tag
-                </Button>
-              )}
-            </div>
-            <p className="text-xs text-gray-600">
-              Type a piece of text that is in the document; the tag is written right
-              after it, in the same formatting. It then shows up in the list above and
-              gets its number in document order.
-            </p>
-            <div className="flex gap-2 items-center">
-              <Input
-                value={tagText}
-                onChange={(e) => setTagText(e.target.value)}
-                placeholder="e.g. Signature:  or  I agree to the terms"
-                className="h-8 text-sm bg-white"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && tagText.trim() && tagHits > 0 && !tagBusy) {
-                    setTagBusy(true);
-                    onInsertTag(tagText.trim(), tagType, tagAll)
-                      .then(() => setTagText(""))
-                      .finally(() => setTagBusy(false));
-                  }
-                }}
-              />
-              <select
-                value={tagType}
-                onChange={(e) => setTagType(e.target.value as typeof tagType)}
-                className="h-8 text-xs border rounded-md px-2 bg-white"
-              >
-                <option value="checkbox">Checkbox</option>
-                <option value="checkboxChecked">Checked checkbox</option>
-                <option value="textbox">Textbox</option>
-              </select>
-            </div>
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-xs text-gray-600">
-                {tagText.trim()
-                  ? tagHits === 0
-                    ? "not found in the document text"
-                    : tagHits === 1
-                      ? "found once"
-                      : `found ${tagHits} times — first one is used`
-                  : " "}
-                {tagHits > 1 && (
-                  <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={tagAll}
-                      onChange={(e) => setTagAll(e.target.checked)}
-                      className="h-3.5 w-3.5"
-                    />
-                    add after every one
-                  </label>
+          {/* ── 4. the list ── */}
+          {candidates.length > 0 && (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search… (e.g. lunch, c3, picture)"
+                  className="pl-9 h-9 text-sm"
+                />
+                {(q || filter !== "all") && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">
+                    {visible.length}/{candidates.length}
+                  </span>
                 )}
-              </span>
-              <Button
-                size="sm"
-                className="h-8 text-xs"
-                disabled={!tagText.trim() || tagHits === 0 || tagBusy}
-                onClick={() => {
-                  setTagBusy(true);
-                  onInsertTag(tagText.trim(), tagType, tagAll)
-                    .then(() => setTagText(""))
-                    .finally(() => setTagBusy(false));
-                }}
-              >
-                {tagBusy ? "Adding…" : "Add tag after this text"}
-              </Button>
+              </div>
+              <div className="flex gap-1 flex-wrap">
+                {FILTERS.filter((f) => f.key !== "undecided" || undecided > 0).map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => setFilter(f.key)}
+                    className={`h-6 px-2 rounded-full border text-[11px] ${filter === f.key ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {candidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -1988,8 +2035,12 @@ function ControlsPanel({
               {visible.length === 0 && (
                 <p className="text-xs text-muted-foreground">No control matches “{search}”.</p>
               )}
-              {visible.map((c) => {
+              {visible.map((c, vi) => {
                 const idx = candidates.indexOf(c);
+                const tIndex = c.template ?? 0;
+                const newTemplate =
+                  templateParts.length > 1 &&
+                  (vi === 0 || (visible[vi - 1].template ?? 0) !== tIndex);
                 const type = types[c.id] ?? c.suggested ?? "ignore";
                 const marker =
                   type === "ignore"
@@ -1997,8 +2048,17 @@ function ControlsPanel({
                     : `${assignments[c.id].id}${type === "checkboxChecked" ? "c" : ""}`;
                 const needsDecision = c.suggested === null && types[c.id] === undefined;
                 return (
+                  <Fragment key={c.id}>
+                  {newTemplate && (
+                    <div className="sticky top-0 z-10 -mx-1 px-1 py-1 bg-white/95 backdrop-blur text-xs font-medium text-gray-700 flex items-center gap-2 border-b">
+                      <Languages className="h-3.5 w-3.5 text-gray-500" />
+                      {templateName(templateParts[tIndex])}
+                      <span className="font-normal text-gray-500">
+                        {perTemplate ? "· numbered from c1 / t1" : "· numbering continues"}
+                      </span>
+                    </div>
+                  )}
                   <div
-                    key={c.id}
                     className={`p-2.5 rounded-lg border flex gap-3 ${needsDecision ? "bg-orange-50 border-orange-200" : type === "ignore" ? "bg-gray-50 border-gray-200 opacity-80" : "bg-white border-gray-200"}`}
                   >
                     <div className="w-11 h-11 flex-shrink-0 rounded border bg-white flex items-center justify-center overflow-hidden">
@@ -2061,19 +2121,109 @@ function ControlsPanel({
                       </select>
                     </div>
                   </div>
+                  </Fragment>
                 );
               })}
             </div>
           )}
-          <p className="text-xs text-gray-500">
-            {assigned} of {candidates.length} will become controls, numbered in the order they appear.
-          </p>
+          {/* add a tag from here, without opening Word */}
+          <details className="group rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
+            <summary className="flex items-center justify-between gap-2 cursor-pointer list-none">
+              <span className="font-medium text-sm flex items-center gap-2">
+                <Plus className="h-4 w-4 text-violet-700" />
+                Something missing? Add a tag yourself
+              </span>
+              <span className="text-xs text-violet-700 group-open:hidden">open</span>
+            </summary>
+            <div className="flex items-center justify-end gap-2">
+              {canUndo && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  disabled={tagBusy}
+                  onClick={() => {
+                    setTagBusy(true);
+                    onUndoInsert().finally(() => setTagBusy(false));
+                  }}
+                >
+                  Undo last added tag
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-gray-600">
+              Type a piece of text that is in the document; the tag is written right
+              after it, in the same formatting. It then shows up in the list and gets
+              its number in document order.
+            </p>
+            <div className="flex gap-2 items-center">
+              <Input
+                value={tagText}
+                onChange={(e) => setTagText(e.target.value)}
+                placeholder="e.g. Signature:  or  I agree to the terms"
+                className="h-8 text-sm bg-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && tagText.trim() && tagHits > 0 && !tagBusy) {
+                    setTagBusy(true);
+                    onInsertTag(tagText.trim(), tagType, tagAll)
+                      .then(() => setTagText(""))
+                      .finally(() => setTagBusy(false));
+                  }
+                }}
+              />
+              <select
+                value={tagType}
+                onChange={(e) => setTagType(e.target.value as typeof tagType)}
+                className="h-8 text-xs border rounded-md px-2 bg-white"
+              >
+                <option value="checkbox">Checkbox</option>
+                <option value="checkboxChecked">Checked checkbox</option>
+                <option value="textbox">Textbox</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs text-gray-600">
+                {tagText.trim()
+                  ? tagHits === 0
+                    ? "not found in the document text"
+                    : tagHits === 1
+                      ? "found once"
+                      : `found ${tagHits} times — first one is used`
+                  : " "}
+                {tagHits > 1 && (
+                  <label className="ml-2 inline-flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tagAll}
+                      onChange={(e) => setTagAll(e.target.checked)}
+                      className="h-3.5 w-3.5"
+                    />
+                    add after every one
+                  </label>
+                )}
+              </span>
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                disabled={!tagText.trim() || tagHits === 0 || tagBusy}
+                onClick={() => {
+                  setTagBusy(true);
+                  onInsertTag(tagText.trim(), tagType, tagAll)
+                    .then(() => setTagText(""))
+                    .finally(() => setTagBusy(false));
+                }}
+              >
+                {tagBusy ? "Adding…" : "Add tag after this text"}
+              </Button>
+            </div>
+          </details>
+
         </div>
       )}
 
       {hasWarnings && !(file.kind === "docx" && renumber) && (
         <div className="p-3 rounded-lg border border-orange-200 bg-orange-50 text-xs text-orange-800 space-y-1">
-          {duplicateIds.length > 0 && (
+          {duplicateIds.length > 0 && !perTemplate && (
             <p>
               <strong>Duplicate ids:</strong>{" "}
               <span className="font-mono">{duplicateIds.join(", ")}</span> — the same
@@ -2260,12 +2410,9 @@ function SettingsPanel({
           label="Convert tags to form controls in the HTML"
           hint="Replace <c1>, <c1c>, <t1> with the HTML below (the .docx keeps the markers)"
         />
-        <ToggleRow
-          checked={settings.renumber}
-          onChange={(v) => onChange((s) => ({ ...s, renumber: v }))}
-          label="Renumber all tags in document order"
-          hint="Ignore the numbers typed in Word and number every checkbox / textbox afresh from top to bottom"
-        />
+        <p className="text-[11px] text-gray-500">
+          Checkbox / textbox numbering is set in the Controls tab (Numbering).
+        </p>
       </div>
 
       <div className="space-y-3 border-t pt-4">
